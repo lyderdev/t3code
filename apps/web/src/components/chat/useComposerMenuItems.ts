@@ -43,6 +43,7 @@ import {
   rankPullRequestMatches,
 } from "../pullRequest/pullRequestList.logic";
 import type { ComposerCommandItem } from "./ComposerCommandMenu";
+import { matchClickUpTasks, useClickUpMentionTasks } from "../../clickup/clickupTaskMentions";
 import {
   searchSlashCommandItems,
   slashCommandItemsForPromptPosition,
@@ -173,6 +174,17 @@ export function useComposerMenuItems({
         }),
   );
 
+  const clickUpTasks = useClickUpMentionTasks(composerTriggerKind === "pull-request");
+  const clickUpItems: ComposerCommandItem[] =
+    composerTrigger?.kind === "pull-request"
+      ? matchClickUpTasks(clickUpTasks, composerTrigger.query).map((task) => ({
+          id: `clickup-task:${task.id}`,
+          type: "clickup-task" as const,
+          task,
+          label: task.name,
+          description: `ClickUp · ${task.status.status}`,
+        }))
+      : [];
   const linkedPullRequests =
     pullRequestProjectId === null
       ? []
@@ -328,26 +340,30 @@ export function useComposerMenuItems({
             query: composerTrigger.query,
             limit: COMPOSER_PULL_REQUEST_RESULT_LIMIT,
           });
-      return matches.map((pullRequest) => ({
-        id: `pull-request:${pullRequest.projectId}:${pullRequest.repository}:${pullRequest.number}`,
-        type: "pull-request",
-        pullRequest: {
-          number: pullRequest.number,
-          title: pullRequest.title,
-          url: pullRequest.url,
-          headBranch: pullRequest.headBranch,
-          baseBranch: pullRequest.baseBranch,
-          state: pullRequest.state,
-          isDraft: pullRequest.isDraft,
-        },
-        label: `#${pullRequest.number}`,
-        description:
-          pullRequest.repository.trim().toLowerCase() === pullRequestRepository.trim().toLowerCase()
-            ? pullRequest.title
-            : `${pullRequest.repository} · ${pullRequest.title}`,
-      }));
+      return [
+        ...matches.map((pullRequest) => ({
+          id: `pull-request:${pullRequest.projectId}:${pullRequest.repository}:${pullRequest.number}`,
+          type: "pull-request" as const,
+          pullRequest: {
+            number: pullRequest.number,
+            title: pullRequest.title,
+            url: pullRequest.url,
+            headBranch: pullRequest.headBranch,
+            baseBranch: pullRequest.baseBranch,
+            state: pullRequest.state,
+            isDraft: pullRequest.isDraft,
+          },
+          label: `#${pullRequest.number}`,
+          description:
+            pullRequest.repository.trim().toLowerCase() ===
+            pullRequestRepository.trim().toLowerCase()
+              ? pullRequest.title
+              : `${pullRequest.repository} · ${pullRequest.title}`,
+        })),
+        ...clickUpItems,
+      ];
     }
-    return [];
+    return composerTrigger.kind === "pull-request" ? clickUpItems : [];
   })();
   const isLoading =
     (composerTriggerKind === "path" && pathTriggerQuery.length > 0 && workspaceEntries.isPending) ||

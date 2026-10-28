@@ -22,7 +22,9 @@ import {
   SettingsIcon,
   UserRoundIcon,
   type LucideIcon,
+  ListTodoIcon,
 } from "lucide-react";
+import type { ClickUpTask } from "../../clickup/api";
 import { memo, useLayoutEffect, useRef } from "react";
 
 import { type ComposerSlashCommand, type ComposerTriggerKind } from "../../composer-logic";
@@ -71,6 +73,13 @@ export type ComposerCommandItem =
       id: string;
       type: "pull-request";
       pullRequest: PullRequestContextMetadata;
+      label: string;
+      description: string;
+    }
+  | {
+      id: string;
+      type: "clickup-task";
+      task: ClickUpTask;
       label: string;
       description: string;
     }
@@ -221,6 +230,9 @@ const ComposerCommandMenuItem = memo(function ComposerCommandMenuItem(props: {
           className="size-4 shrink-0 text-secondary-label"
         />
       ) : null}
+      {props.item.type === "clickup-task" ? (
+        <ListTodoIcon aria-hidden="true" className="size-4 shrink-0 text-secondary-label" />
+      ) : null}
       {pullRequestPresentation ? (
         <pullRequestPresentation.Icon
           role="img"
@@ -260,7 +272,7 @@ export function composerSuggestionOptionId(listId: string, itemId: string): stri
 
 const LISTBOX_LABEL_BY_TRIGGER: Record<ComposerTriggerKind, string> = {
   path: "Files and folders",
-  "pull-request": "Pull requests",
+  "pull-request": "Pull requests and ClickUp tasks",
   "slash-command": "Commands",
   skill: "Skills",
 };

@@ -200,6 +200,7 @@ import { ComposerPendingUserInputPanel } from "./ComposerPendingUserInputPanel";
 import { ComposerPlanFollowUpBanner } from "./ComposerPlanFollowUpBanner";
 import { resolveComposerMenuActiveItemId } from "./composerMenuHighlight";
 import { buildPullRequestReferenceContext } from "../pullRequest/pullRequestDetail.logic";
+import { buildClickUpTaskContext, fillClickUpTaskChip } from "../../clickup/clickupTaskMentions";
 import { getComposerPromptInjectionState, getComposerReasoningStep } from "./composerProviderState";
 import { readPromptUltrathink } from "./TraitsPicker";
 import {
@@ -2010,6 +2011,29 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           appendReference: false,
         });
         setComposerHighlightedItemId(null);
+      }
+      return;
+    }
+    if (item.type === "clickup-task") {
+      if (trigger.kind !== "pull-request") return;
+      const comment = buildClickUpTaskContext(item.task);
+      const replacement = `${formatInlineContextReference(
+        reviewCommentContextReference(comment),
+      )} `;
+      const replacementRangeEnd = extendReplacementRangeForTrailingSpace(
+        snapshot.value,
+        trigger.rangeEnd,
+        replacement,
+      );
+      const applied = applyPromptReplacement(trigger.rangeStart, replacementRangeEnd, replacement, {
+        expectedText: snapshot.value.slice(trigger.rangeStart, replacementRangeEnd),
+      });
+      if (applied) {
+        addComposerDraftReviewComment(composerDraftTarget, comment, {
+          appendReference: false,
+        });
+        setComposerHighlightedItemId(null);
+        void fillClickUpTaskChip(composerDraftTarget, item.task);
       }
       return;
     }
