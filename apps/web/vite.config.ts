@@ -254,6 +254,8 @@ const allowedHosts = [".ts.net", ...configuredAllowedHosts];
 
 export default defineConfig(() => {
   return {
+    // A project-site on GitHub Pages serves the app from a sub-path.
+    base: process.env.T3CODE_WEB_BASE_PATH?.trim() || "/",
     run: {
       tasks: {
         // tsc (tsc-rs) rewrites the tsbuildinfo it reads, which keeps a task out of the cache.
