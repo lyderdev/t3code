@@ -43,6 +43,7 @@ import { Fragment, useEffect, useRef, useState, type ElementType, type ReactNode
 import { useComposerDraftStore } from "~/composerDraftStore";
 import { requestConfirmDialog } from "~/confirmDialog";
 import { useNewThreadHandler } from "~/hooks/useHandleNewThread";
+import { useMediaQuery } from "~/hooks/useMediaQuery";
 import { cn } from "~/lib/utils";
 import { useProjects, useThreadShells } from "~/state/entities";
 import { sortScopedProjectsForSidebar } from "~/components/Sidebar.logic";
@@ -252,6 +253,14 @@ export function ClickUpPage() {
   };
   const { view, sidebarOpen } = ui;
   const setView = (next: View) => updateUi({ view: next });
+  // Below lg the spaces sidebar is a drawer that starts closed, so content keeps the screen.
+  const compactLayout = useMediaQuery("max-lg");
+  const [compactSpacesOpen, setCompactSpacesOpen] = useState(false);
+  const spacesOpen = compactLayout ? compactSpacesOpen : sidebarOpen;
+  const toggleSpaces = () => {
+    if (compactLayout) setCompactSpacesOpen((open) => !open);
+    else updateUi({ sidebarOpen: !sidebarOpen });
+  };
   const openTaskId = useClickUpOpenTaskStore((state) => state.taskId);
   const setOpenTaskId = setClickUpOpenTask;
   const [unlistedTask, setUnlistedTask] = useState<ClickUpTask | null>(null);
@@ -421,6 +430,7 @@ export function ClickUpPage() {
   const selectList = async (list: ClickUpList) => {
     setSelectedList(list);
     setFilters(EMPTY_TASK_FILTERS);
+    setCompactSpacesOpen(false);
     saveLastClickUpList(list);
     if (mode !== "live" || !token) {
       setStatuses(DEMO_STATUSES);
@@ -598,11 +608,20 @@ export function ClickUpPage() {
     "ClickUp";
 
   return (
-    <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden bg-background text-sm text-foreground">
+    <div className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden bg-background text-sm text-foreground">
+      {compactLayout && spacesOpen ? (
+        <button
+          type="button"
+          aria-label="Close spaces"
+          onClick={() => setCompactSpacesOpen(false)}
+          className="absolute inset-0 z-10 bg-black/40"
+        />
+      ) : null}
       <aside
         className={cn(
           "w-62 shrink-0 flex-col bg-sidebar text-sidebar-foreground",
-          sidebarOpen ? "flex" : "hidden",
+          spacesOpen ? "flex" : "hidden",
+          compactLayout && "absolute inset-y-0 left-0 z-20 pt-12 shadow-xl",
         )}
       >
         <Menu>
@@ -757,12 +776,12 @@ export function ClickUpPage() {
       </aside>
 
       <div className={cn("min-w-0 flex-1 flex-col", openTask ? "hidden" : "flex")}>
-        <header className="flex h-12 shrink-0 items-center gap-2 border-b border-border px-4">
+        <header className="flex h-12 shrink-0 items-center gap-2 border-b border-border px-2 pl-12 md:px-4">
           <Button
             variant="ghost-muted"
             size="icon-xs"
-            onClick={() => updateUi({ sidebarOpen: !sidebarOpen })}
-            aria-label={sidebarOpen ? "Hide spaces" : "Show spaces"}
+            onClick={toggleSpaces}
+            aria-label={spacesOpen ? "Hide spaces" : "Show spaces"}
           >
             <PanelLeftIcon />
           </Button>
@@ -771,8 +790,8 @@ export function ClickUpPage() {
             <ChevronRightIcon className="size-3.5 shrink-0 text-muted-foreground/70" />
             <span className="truncate font-semibold">{selectedList?.name ?? "All tasks"}</span>
           </div>
-          <div className="ml-auto flex items-center gap-1">
-            <span className="mr-1 text-xs text-muted-foreground">
+          <div className="ml-auto flex shrink-0 items-center gap-1">
+            <span className="mr-1 hidden text-xs text-muted-foreground sm:block">
               {visibleTasks.length === tasks.length
                 ? `${tasks.length} tasks`
                 : `${visibleTasks.length} of ${tasks.length} tasks`}
@@ -797,13 +816,13 @@ export function ClickUpPage() {
               className="flex items-center gap-1 rounded-md border border-input px-2 py-1.5 text-xs font-medium text-secondary-label hover:bg-accent disabled:opacity-40"
             >
               <PlusIcon className="size-3.5" />
-              New task
+              <span className="hidden sm:inline">New task</span>
             </button>
             <a
               href="https://app.clickup.com"
               target="_blank"
               rel="noreferrer"
-              className="flex items-center gap-1.5 rounded-md bg-primary px-2.5 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90"
+              className="hidden items-center gap-1.5 rounded-md bg-primary px-2.5 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 md:flex"
             >
               Open ClickUp
               <ExternalLinkIcon className="size-3.5" />
@@ -812,7 +831,7 @@ export function ClickUpPage() {
         </header>
 
         {mode !== "gate" ? (
-          <div className="flex h-10 shrink-0 items-center gap-1 border-b border-border px-3">
+          <div className="flex min-h-10 shrink-0 flex-wrap items-center gap-1 border-b border-border px-3 py-1">
             {(
               [
                 ["list", "List", ListIcon],
@@ -824,7 +843,7 @@ export function ClickUpPage() {
                 type="button"
                 onClick={() => setView(value)}
                 className={cn(
-                  "flex h-full items-center gap-1.5 border-b-2 px-2 text-sm",
+                  "flex h-8 items-center gap-1.5 border-b-2 px-2 text-sm",
                   view === value
                     ? "border-primary font-medium text-foreground"
                     : "border-transparent text-muted-foreground hover:text-foreground",
@@ -834,18 +853,19 @@ export function ClickUpPage() {
                 {label}
               </button>
             ))}
-            <div className="ml-auto flex items-center gap-2">
+            <div className="ml-auto flex min-w-0 flex-1 flex-wrap items-center justify-end gap-2">
               <Menu>
                 <MenuTrigger
                   render={
                     <button
                       type="button"
+                      aria-label="Subtasks"
                       className="flex items-center gap-1 rounded-md border border-input px-2 py-1.5 text-xs font-medium text-secondary-label hover:bg-accent"
                     />
                   }
                 >
                   <ListTreeIcon className="size-3.5" />
-                  Subtasks
+                  <span className="hidden sm:inline">Subtasks</span>
                 </MenuTrigger>
                 <MenuPopup align="end" side="bottom">
                   <MenuGroup>
@@ -865,7 +885,7 @@ export function ClickUpPage() {
                 </MenuPopup>
               </Menu>
               <TaskFilterMenu tasks={tasks} filters={filters} onChange={setFilters} />
-              <div className="w-56">
+              <div className="min-w-40 flex-1 sm:w-56 sm:flex-none">
                 <InputGroup>
                   <InputGroupAddon>
                     <SearchIcon />
@@ -888,7 +908,7 @@ export function ClickUpPage() {
         ) : null}
 
         {picked.size > 0 ? (
-          <div className="flex items-center gap-3 border-b border-border bg-accent px-4 py-1.5 text-xs">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 border-b border-border bg-accent px-4 py-1.5 text-xs">
             <span className="font-medium">
               {picked.size} {picked.size === 1 ? "task" : "tasks"} selected
             </span>
@@ -967,6 +987,8 @@ export function ClickUpPage() {
         statuses={statuses}
         busy={busyTaskId === openTask?.id}
         threads={(openTask && threadsByTask.get(openTask.id)) ?? []}
+        sidebarOpen={spacesOpen}
+        onToggleSidebar={toggleSpaces}
         onChangeStatus={(task, status) => void changeStatus(task, status)}
         onTaskSynced={(synced) =>
           setTasks((current) =>
@@ -1022,12 +1044,13 @@ function TaskFilterMenu({
         render={
           <button
             type="button"
+            aria-label="Filters"
             className="flex items-center gap-1 rounded-md border border-input px-2 py-1.5 text-xs font-medium text-secondary-label hover:bg-accent"
           />
         }
       >
         <ListFilterIcon className="size-3.5" />
-        Filters
+        <span className="hidden sm:inline">Filters</span>
         {count > 0 ? (
           <span className="rounded-full bg-primary/15 px-1.5 text-2xs font-semibold text-primary tabular-nums">
             {count}
@@ -1183,8 +1206,8 @@ function ConnectGate({
   error: string | null;
 }) {
   return (
-    <div className="grid min-h-full place-items-center bg-muted px-6 py-12">
-      <div className="w-full max-w-105 rounded-xl border border-border bg-card p-6 shadow-xs">
+    <div className="grid min-h-full place-items-center bg-muted px-4 py-10 sm:px-6 sm:py-12">
+      <div className="w-full max-w-105 rounded-xl border border-border bg-card p-5 shadow-xs sm:p-6">
         <div className="mb-4 grid size-10 place-items-center rounded-lg bg-primary text-primary-foreground">
           <PlugZapIcon className="size-5" />
         </div>
@@ -1360,18 +1383,18 @@ function ListView({
             ) : null}
           </div>
           <TaskThreadsBadge threads={threadsByTask.get(task.id)} />
-          <span className="w-20">
+          <span className="hidden w-20 md:block">
             <Assignees task={task} />
           </span>
           <span
             className={cn(
-              "w-20 text-xs",
+              "hidden w-20 text-xs sm:block",
               isOverdue(task.due_date) ? "text-error" : "text-muted-foreground",
             )}
           >
             {due ?? "–"}
           </span>
-          <span className="flex w-20 items-center gap-1 text-xs text-muted-foreground">
+          <span className="hidden w-20 items-center gap-1 text-xs text-muted-foreground md:flex">
             {priority ? (
               <>
                 <FlagIcon
@@ -1422,9 +1445,9 @@ function ListView({
             <>
               <div className="flex h-7 items-center gap-3 border-b border-border pr-2 pl-14 text-2xs font-medium text-muted-foreground/70">
                 <span className="flex-1">Name</span>
-                <span className="w-20">Assignee</span>
-                <span className="w-20">Due date</span>
-                <span className="w-20">Priority</span>
+                <span className="hidden w-20 md:block">Assignee</span>
+                <span className="hidden w-20 sm:block">Due date</span>
+                <span className="hidden w-20 md:block">Priority</span>
               </div>
               {group.tasks.map((task) => renderRow(task, 0))}
               <AddTask
@@ -1544,7 +1567,7 @@ function BoardColumn({
     <section
       ref={setNodeRef}
       className={cn(
-        "flex max-h-full w-68 shrink-0 flex-col rounded-lg border-t-3 bg-muted",
+        "flex max-h-full w-64 shrink-0 flex-col rounded-lg border-t-3 bg-muted sm:w-68",
         isOver && "bg-accent ring-2 ring-primary/40",
       )}
       style={{ borderTopColor: color }}
@@ -1948,6 +1971,8 @@ function TaskDetailSheet({
   statuses,
   busy,
   threads,
+  sidebarOpen,
+  onToggleSidebar,
   onChangeStatus,
   onTaskSynced,
   onTaskDeleted,
@@ -1958,6 +1983,8 @@ function TaskDetailSheet({
   statuses: ReadonlyArray<ClickUpListStatus>;
   busy: boolean;
   threads: ReadonlyArray<EnvironmentThreadShell>;
+  sidebarOpen: boolean;
+  onToggleSidebar: () => void;
   onChangeStatus: (task: ClickUpTask, status: ClickUpListStatus) => void;
   onTaskSynced: (task: ClickUpTaskDetail) => void;
   onTaskDeleted: (taskId: string) => void;
@@ -2092,7 +2119,15 @@ function TaskDetailSheet({
   if (!task) return null;
   return (
     <div className="@container flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden text-sm">
-      <div className="flex h-12 shrink-0 items-center gap-2 border-b border-border px-3 text-xs text-muted-foreground">
+      <div className="flex h-12 shrink-0 items-center gap-2 border-b border-border px-2 pl-12 text-xs text-muted-foreground md:px-3">
+        <Button
+          variant="ghost"
+          size="icon-xs"
+          onClick={onToggleSidebar}
+          aria-label={sidebarOpen ? "Hide spaces" : "Show spaces"}
+        >
+          <PanelLeftIcon />
+        </Button>
         <Button
           variant="ghost"
           size="icon-xs"
@@ -2104,19 +2139,20 @@ function TaskDetailSheet({
         >
           <ArrowLeftIcon />
         </Button>
-        <ListIcon className="size-3.5" />
+        <ListIcon className="hidden size-3.5 shrink-0 sm:block" />
         <span className="truncate">{loaded?.list?.name ?? "Task"}</span>
-        <ChevronRightIcon className="size-3.5 shrink-0" />
-        <span className="rounded-sm border border-border px-1.5 py-0.5 font-mono text-2xs">
+        <ChevronRightIcon className="hidden size-3.5 shrink-0 sm:block" />
+        <span className="hidden rounded-sm border border-border px-1.5 py-0.5 font-mono text-2xs sm:block">
           {task.id}
         </span>
         <a
           href={task.url}
           target="_blank"
           rel="noreferrer"
-          className="ml-auto flex items-center gap-1 hover:text-foreground"
+          className="ml-auto flex shrink-0 items-center gap-1 hover:text-foreground"
+          aria-label="Open in ClickUp"
         >
-          Open in ClickUp
+          <span className="hidden sm:inline">Open in ClickUp</span>
           <ExternalLinkIcon className="size-3.5" />
         </a>
         <Button
