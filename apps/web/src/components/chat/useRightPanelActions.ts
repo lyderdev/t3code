@@ -158,6 +158,9 @@ export function useRightPanelActions(input: RightPanelActionsInput) {
     useRightPanelStore.getState().open(activeThreadRef, "device");
   };
   const addDeviceSurfaceStable = useStableCallback(addDeviceSurface);
+  const addClickUpSurfaceStable = useStableCallback(() => {
+    if (activeThreadRef) useRightPanelStore.getState().open(activeThreadRef, "clickup");
+  });
   const openFileSurface = (relativePath: string) => {
     if (!activeThreadRef || !activeProject) return;
     useRightPanelStore.getState().openFile(activeThreadRef, relativePath);
@@ -338,6 +341,7 @@ export function useRightPanelActions(input: RightPanelActionsInput) {
   return {
     shortcuts,
     activateRightPanelSurfaceStable,
+    addClickUpSurfaceStable,
     addDeviceSurfaceStable,
     addDiffSurfaceStable,
     addFilesSurfaceStable,

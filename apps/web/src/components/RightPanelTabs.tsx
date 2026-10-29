@@ -27,6 +27,7 @@ import { horizontalListSortingStrategy, SortableContext, useSortable } from "@dn
 import { CSS } from "@dnd-kit/utilities";
 import {
   Smartphone,
+  SquareKanban,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
@@ -129,6 +130,8 @@ export interface RightPanelTabsProps {
   onAddPullRequest: () => void;
   onAddPullRequests: () => void;
   onAddDevice: () => void;
+  /** Omitted where a ClickUp tab makes no sense. */
+  onAddClickUp?: () => void;
   browserAvailable: boolean;
   terminalAvailable: boolean;
   diffAvailable: boolean;
@@ -162,6 +165,7 @@ const SURFACE_DISABLED_REASONS = {
   pullRequest: "This thread's branch has no pull request yet.",
   pullRequests: "No linked pull requests are available for this thread.",
   device: "Devices are only available from a thread.",
+  clickup: "ClickUp is only available from a thread.",
 } as const;
 
 // Closed keepMounted popups must stop blocking shortcuts once their exit transition ends.
@@ -186,6 +190,7 @@ const SURFACE_UNAVAILABLE_HINTS = {
   pullRequest: "No pull request on this branch yet.",
   pullRequests: "No linked pull requests available.",
   device: "Available from a thread.",
+  clickup: "Available from a thread.",
 } as const;
 
 type TabContextMenuAction =
@@ -303,6 +308,8 @@ function RightPanelEmptyState(props: {
   onAddPullRequest: () => void;
   onAddPullRequests: () => void;
   onAddDevice: () => void;
+  /** Omitted where a ClickUp tab makes no sense. */
+  onAddClickUp?: () => void;
   browserAvailable: boolean;
   terminalAvailable: boolean;
   diffAvailable: boolean;
@@ -370,6 +377,14 @@ function RightPanelEmptyState(props: {
       available: props.deviceAvailable,
       disabledReason: SURFACE_UNAVAILABLE_HINTS.device,
       onClick: props.onAddDevice,
+    },
+    {
+      label: "ClickUp",
+      icon: SquareKanban,
+      shortcut: "C",
+      available: props.onAddClickUp !== undefined,
+      disabledReason: SURFACE_UNAVAILABLE_HINTS.clickup,
+      onClick: props.onAddClickUp ?? (() => undefined),
     },
   ] as const;
 
@@ -554,6 +569,8 @@ function surfaceTitle(
       return `#${surface.number}`;
     case "pull-requests":
       return "Pull requests";
+    case "clickup":
+      return "ClickUp";
     case "device":
       return surface.title ?? surface.target?.name ?? "Device";
     case "preview": {
@@ -644,6 +661,8 @@ function SurfaceIcon({
       );
     case "pull-requests":
       return <PullRequestGlyph.link className="size-3 shrink-0" />;
+    case "clickup":
+      return <SquareKanban className="size-3 shrink-0" />;
     case "device":
       return surface.target?.platform === "ios" ? (
         <AppleIcon className="size-3 shrink-0" />
@@ -1065,6 +1084,14 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
       disabledReason: SURFACE_DISABLED_REASONS.device,
       onClick: props.onAddDevice,
     },
+    {
+      label: "ClickUp",
+      icon: SquareKanban,
+      shortcut: "C",
+      available: props.onAddClickUp !== undefined,
+      disabledReason: SURFACE_DISABLED_REASONS.clickup,
+      onClick: props.onAddClickUp ?? (() => undefined),
+    },
   ] as const;
 
   const handleAddSurfaceMenuKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
@@ -1439,6 +1466,7 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
             onAddPullRequest={props.onAddPullRequest}
             onAddPullRequests={props.onAddPullRequests}
             onAddDevice={props.onAddDevice}
+            {...(props.onAddClickUp ? { onAddClickUp: props.onAddClickUp } : {})}
             browserAvailable={props.browserAvailable}
             terminalAvailable={props.terminalAvailable}
             diffAvailable={props.diffAvailable}

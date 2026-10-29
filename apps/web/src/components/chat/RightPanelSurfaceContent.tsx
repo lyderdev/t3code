@@ -31,6 +31,9 @@ const DevicePanel = lazy(() =>
   import("../device/DevicePanel").then((module) => ({ default: module.DevicePanel })),
 );
 const FilePreviewPanel = lazy(() => import("../files/FilePreviewPanel"));
+const ClickUpPage = lazy(() =>
+  import("../../clickup/ClickUpPage").then((module) => ({ default: module.ClickUpPage })),
+);
 
 type RightPanelTerminalProps = Omit<
   PersistentThreadTerminalPanelProps,
@@ -165,6 +168,12 @@ export function RightPanelSurfaceContent(props: {
     }
     case "pull-requests":
       return <ThreadPullRequestsPanel threadRef={threadRef} />;
+    case "clickup":
+      return (
+        <Suspense fallback={null}>
+          <ClickUpPage />
+        </Suspense>
+      );
     case "device":
       return (
         <Suspense fallback={null}>

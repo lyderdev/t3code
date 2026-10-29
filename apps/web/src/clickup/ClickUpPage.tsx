@@ -1,28 +1,56 @@
+import {
+  DndContext,
+  DragOverlay,
+  KeyboardSensor,
+  PointerSensor,
+  useDraggable,
+  useDroppable,
+  useSensor,
+  useSensors,
+} from "@dnd-kit/core";
 import { scopeProjectRef } from "@t3tools/client-runtime/environment";
 import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
 import {
+  threadRuntimeIsActive,
+  type EnvironmentThreadShell,
+} from "@t3tools/client-runtime/state/models";
+import { Link } from "@tanstack/react-router";
+import {
+  CalendarIcon,
   CheckIcon,
   ChevronDownIcon,
   ChevronRightIcon,
+  CircleDotIcon,
   ExternalLinkIcon,
   FlagIcon,
   ListIcon,
+  PanelLeftIcon,
+  PencilIcon,
   PlugZapIcon,
   PlusIcon,
   SearchIcon,
   SquareKanbanIcon,
+  TagIcon,
+  Trash2Icon,
+  UsersIcon,
+  XIcon,
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 
 import { useComposerDraftStore } from "~/composerDraftStore";
+import { requestConfirmDialog } from "~/confirmDialog";
 import { useNewThreadHandler } from "~/hooks/useHandleNewThread";
 import { cn } from "~/lib/utils";
 import { useProjects, useThreadShells } from "~/state/entities";
 import { sortScopedProjectsForSidebar } from "~/components/Sidebar.logic";
 import { toastManager } from "~/components/ui/toast";
+import { Button } from "~/components/ui/button";
+import { Input } from "~/components/ui/input";
+import { Textarea } from "~/components/ui/textarea";
 import { InputGroup, InputGroupAddon, InputGroupInput } from "~/components/ui/input-group";
 import {
   Menu,
+  MenuCheckboxItem,
   MenuGroup,
   MenuGroupLabel,
   MenuItem,
@@ -33,8 +61,13 @@ import {
   MenuTrigger,
 } from "~/components/ui/menu";
 import { RefreshIcon } from "~/components/ui/refresh-icon";
+import { Dialog, DialogPopup } from "~/components/ui/dialog";
+import ChatMarkdown from "~/components/ChatMarkdown";
 import {
+  createSubtask,
   createTask,
+  createTaskComment,
+  deleteTask,
   DEMO_LISTS,
   DEMO_SPACES,
   DEMO_STATUSES,
@@ -42,9 +75,13 @@ import {
   demoTasks,
   errorMessage,
   fetchIdentity,
+  fetchListMembers,
   fetchLists,
   fetchListStatuses,
   fetchSpaces,
+  fetchSpaceTags,
+  fetchTaskComments,
+  fetchTaskDetail,
   fetchTasks,
   fetchWorkspaces,
   invalidateClickUpCache,
@@ -53,13 +90,20 @@ import {
   removeClickUpAccount,
   saveClickUpAccount,
   saveLastClickUpList,
+  setChecklistItemResolved,
+  setTaskTag,
+  updateTask,
   updateTaskStatus,
   type ClickUpAccount,
+  type ClickUpComment,
   type ClickUpIdentity,
   type ClickUpList,
   type ClickUpListStatus,
+  type ClickUpMember,
   type ClickUpSpace,
+  type ClickUpTag,
   type ClickUpTask,
+  type ClickUpTaskDetail,
   type ClickUpWorkspace,
 } from "./api";
 import { buildClickUpTaskContext, fillClickUpTaskChip } from "./clickupTaskMentions";
@@ -116,6 +160,48 @@ function groupTasksByStatus(
   return [...groups.entries()];
 }
 
+type PageUiState = {
+  readonly view: View;
+  readonly openTaskId: string | null;
+  readonly sidebarOpen: boolean;
+};
+const UI_STORAGE_KEY = "ldcode:clickup:ui";
+
+function readPageUiState(): PageUiState {
+  const fallback: PageUiState = { view: "list", openTaskId: null, sidebarOpen: true };
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(UI_STORAGE_KEY) ?? "{}") as Partial<
+      Record<keyof PageUiState, unknown>
+    >;
+    return {
+      view: parsed.view === "board" ? "board" : "list",
+      openTaskId: typeof parsed.openTaskId === "string" ? parsed.openTaskId : null,
+      sidebarOpen: parsed.sidebarOpen !== false,
+    };
+  } catch {
+    return fallback;
+  }
+}
+
+type TaskThreadRef = { readonly environmentId: string; readonly threadId: string };
+const TASK_THREADS_STORAGE_KEY = "t3code:clickup:task-threads";
+
+// shortcut: links live in this browser only, so other clients do not see them; move to the thread record if that matters.
+function readTaskThreads(): Record<string, ReadonlyArray<TaskThreadRef>> {
+  try {
+    const parsed: unknown = JSON.parse(
+      window.localStorage.getItem(TASK_THREADS_STORAGE_KEY) ?? "{}",
+    );
+    return parsed && typeof parsed === "object" ? (parsed as Record<string, TaskThreadRef[]>) : {};
+  } catch {
+    return {};
+  }
+}
+
+function threadIsRunning(thread: EnvironmentThreadShell): boolean {
+  return threadRuntimeIsActive(thread.runtime);
+}
+
 export function ClickUpPage() {
   const [accounts, setAccounts] = useState(readClickUpAccounts);
   const token = accounts[0]?.token ?? null;
@@ -136,7 +222,15 @@ export function ClickUpPage() {
   const [loadingTasks, setLoadingTasks] = useState(false);
   const [busyTaskId, setBusyTaskId] = useState<string | null>(null);
   const [newTask, setNewTask] = useState<NewTaskDraft | null>(null);
-  const [view, setView] = useState<View>("list");
+  const [ui, setUi] = useState(readPageUiState);
+  const updateUi = (patch: Partial<PageUiState>) => {
+    const next = { ...ui, ...patch };
+    window.localStorage.setItem(UI_STORAGE_KEY, JSON.stringify(next));
+    setUi(next);
+  };
+  const { view, openTaskId, sidebarOpen } = ui;
+  const setView = (next: View) => updateUi({ view: next });
+  const setOpenTaskId = (next: string | null) => updateUi({ openTaskId: next });
   const [query, setQuery] = useState("");
   const [creating, setCreating] = useState(false);
   const taskRequest = useRef(0);
@@ -250,6 +344,7 @@ export function ClickUpPage() {
     setStatuses([]);
     setTasks([]);
     setPicked(new Map());
+    setOpenTaskId(null);
     setError(null);
   };
 
@@ -392,6 +487,18 @@ export function ClickUpPage() {
     threadShells,
     "updated_at",
   );
+  const [taskThreads, setTaskThreads] = useState(readTaskThreads);
+  const threadsByTask = new Map<string, ReadonlyArray<EnvironmentThreadShell>>();
+  for (const [taskId, refs] of Object.entries(taskThreads)) {
+    const threads = threadShells.filter(
+      (thread) =>
+        thread.archivedAt === null &&
+        refs.some(
+          (ref) => ref.environmentId === thread.environmentId && ref.threadId === thread.id,
+        ),
+    );
+    if (threads.length > 0) threadsByTask.set(taskId, threads);
+  }
   const startThread = async (project: EnvironmentProject) => {
     const opened = await handleNewThread(scopeProjectRef(project.environmentId, project.id)).catch(
       () => null,
@@ -403,6 +510,11 @@ export function ClickUpPage() {
     const store = useComposerDraftStore.getState();
     const tasks = [...picked.values()];
     setPicked(new Map());
+    const ref = { environmentId: project.environmentId, threadId: opened.threadId };
+    const nextTaskThreads = { ...readTaskThreads() };
+    for (const task of tasks) nextTaskThreads[task.id] = [...(nextTaskThreads[task.id] ?? []), ref];
+    window.localStorage.setItem(TASK_THREADS_STORAGE_KEY, JSON.stringify(nextTaskThreads));
+    setTaskThreads(nextTaskThreads);
     for (const task of tasks) {
       store.addReviewComment(opened.draftId, buildClickUpTaskContext(task), {
         insertAtCaret: false,
@@ -416,6 +528,7 @@ export function ClickUpPage() {
     needle ? tasks.filter((task) => task.name.toLowerCase().includes(needle)) : tasks,
     statuses,
   );
+  const openTask = tasks.find((task) => task.id === openTaskId) ?? null;
   const activeSpaceName =
     spaces.find((space) => space.id === selectedList?.spaceId)?.name ??
     workspace?.name ??
@@ -423,7 +536,12 @@ export function ClickUpPage() {
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden bg-background text-sm text-foreground">
-      <aside className="flex w-62 shrink-0 flex-col bg-sidebar text-sidebar-foreground">
+      <aside
+        className={cn(
+          "w-62 shrink-0 flex-col bg-sidebar text-sidebar-foreground",
+          sidebarOpen ? "flex" : "hidden",
+        )}
+      >
         <Menu>
           <MenuTrigger
             render={
@@ -577,6 +695,14 @@ export function ClickUpPage() {
 
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="flex h-12 shrink-0 items-center gap-2 border-b border-border px-4">
+          <Button
+            variant="ghost-muted"
+            size="icon-xs"
+            onClick={() => updateUi({ sidebarOpen: !sidebarOpen })}
+            aria-label={sidebarOpen ? "Hide spaces" : "Show spaces"}
+          >
+            <PanelLeftIcon />
+          </Button>
           <div className="flex min-w-0 items-center gap-1.5 text-sm">
             <span className="truncate text-muted-foreground">{activeSpaceName}</span>
             <ChevronRightIcon className="size-3.5 shrink-0 text-muted-foreground/70" />
@@ -727,10 +853,41 @@ export function ClickUpPage() {
               onNewTaskChange={setNewTask}
               onSubmitNewTask={() => void submitNewTask()}
               onChangeStatus={(task, status) => void changeStatus(task, status)}
+              onOpenTask={(task) => setOpenTaskId(task.id)}
+              threadsByTask={threadsByTask}
             />
           )}
         </div>
       </div>
+      <TaskDetailSheet
+        task={openTask}
+        token={mode === "live" ? token : null}
+        statuses={statuses}
+        busy={busyTaskId === openTask?.id}
+        threads={(openTask && threadsByTask.get(openTask.id)) ?? []}
+        onChangeStatus={(task, status) => void changeStatus(task, status)}
+        onTaskSynced={(synced) =>
+          setTasks((current) =>
+            current.map((entry) =>
+              entry.id === synced.id
+                ? {
+                    ...entry,
+                    name: synced.name,
+                    status: synced.status,
+                    priority: synced.priority,
+                    due_date: synced.due_date,
+                    assignees: synced.assignees,
+                  }
+                : entry,
+            ),
+          )
+        }
+        onTaskDeleted={(taskId) => {
+          setTasks((current) => current.filter((entry) => entry.id !== taskId));
+          setOpenTaskId(null);
+        }}
+        onClose={() => setOpenTaskId(null)}
+      />
     </div>
   );
 }
@@ -842,6 +999,8 @@ type TaskViewProps = {
   onNewTaskChange: (value: NewTaskDraft | null) => void;
   onSubmitNewTask: () => void;
   onChangeStatus: (task: ClickUpTask, status: ClickUpListStatus) => void;
+  onOpenTask: (task: ClickUpTask) => void;
+  threadsByTask: ReadonlyMap<string, ReadonlyArray<EnvironmentThreadShell>>;
 };
 
 function TaskView(props: TaskViewProps) {
@@ -875,6 +1034,8 @@ function ListView({
   onNewTaskChange,
   onSubmitNewTask,
   onChangeStatus,
+  onOpenTask,
+  threadsByTask,
 }: TaskViewProps) {
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(() => new Set());
   const toggle = (status: string) =>
@@ -935,14 +1096,14 @@ function ListView({
                       busy={busyTaskId === task.id}
                       onChange={onChangeStatus}
                     />
-                    <a
-                      href={task.url}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="min-w-0 flex-1 truncate text-sm hover:text-primary"
+                    <button
+                      type="button"
+                      onClick={() => onOpenTask(task)}
+                      className="min-w-0 flex-1 truncate text-left text-sm hover:text-primary"
                     >
                       {task.name}
-                    </a>
+                    </button>
+                    <TaskThreadsBadge threads={threadsByTask.get(task.id)} />
                     <span className="w-20">
                       <Assignees task={task} />
                     </span>
@@ -996,65 +1157,43 @@ function BoardView({
   onNewTaskChange,
   onSubmitNewTask,
   onChangeStatus,
+  onOpenTask,
+  threadsByTask,
 }: TaskViewProps) {
+  const [draggingId, setDraggingId] = useState<string | null>(null);
+  // Distance keeps clicks on the name, status menu and pick box from starting a drag.
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
+    useSensor(KeyboardSensor),
+  );
+  const dragging = draggingId
+    ? groups.flatMap(([, group]) => group.tasks).find((task) => task.id === draggingId)
+    : undefined;
+  const cardProps = { statuses, busyTaskId, picked, onTogglePicked, onChangeStatus, onOpenTask };
+
   return (
-    <div className="flex min-h-0 flex-1 gap-3 overflow-x-auto bg-muted p-4">
-      {groups.map(([status, group]) => (
-        <section
-          key={status}
-          className="flex max-h-full w-68 shrink-0 flex-col rounded-lg border-t-3 bg-muted"
-          style={{ borderTopColor: group.color }}
-        >
-          <div className="flex items-center gap-2 px-3 pt-2.5 pb-2">
-            <span className="text-2xs font-semibold tracking-wide text-secondary-label uppercase">
-              {status}
-            </span>
-            <span className="text-xs text-muted-foreground/70">{group.tasks.length}</span>
-          </div>
-          <div className="flex min-h-0 flex-col gap-2 overflow-y-auto px-2 pb-2">
-            {group.tasks.map((task) => {
-              const due = formatDueDate(task.due_date);
-              const priority = task.priority?.priority;
-              return (
-                <div
-                  key={task.id}
-                  className="group flex flex-col gap-2 rounded-md border border-border bg-card p-2.5 shadow-xs hover:border-input"
-                >
-                  <div className="flex items-start gap-2">
-                    <StatusMenu
-                      task={task}
-                      statuses={statuses}
-                      busy={busyTaskId === task.id}
-                      onChange={onChangeStatus}
-                    />
-                    <a
-                      href={task.url}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="min-w-0 flex-1 text-sm leading-snug hover:text-primary"
-                    >
-                      {task.name}
-                    </a>
-                    <PickBox task={task} picked={picked} onToggle={onTogglePicked} />
-                  </div>
-                  {due || priority || task.assignees.length > 0 ? (
-                    <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                      <Assignees task={task} />
-                      {due ? (
-                        <span className={cn(isOverdue(task.due_date) && "text-error")}>{due}</span>
-                      ) : null}
-                      {priority ? (
-                        <FlagIcon
-                          aria-label={PRIORITY_LABELS[priority] ?? "Priority"}
-                          className="ml-auto size-3.5"
-                          style={{ color: PRIORITY_COLORS[priority] ?? "#87909e" }}
-                        />
-                      ) : null}
-                    </div>
-                  ) : null}
-                </div>
-              );
-            })}
+    <DndContext
+      sensors={sensors}
+      onDragStart={(event) => setDraggingId(String(event.active.id))}
+      onDragCancel={() => setDraggingId(null)}
+      onDragEnd={(event) => {
+        setDraggingId(null);
+        const task = dragging;
+        const target = statuses.find((entry) => entry.status === event.over?.id);
+        if (task && target) onChangeStatus(task, target);
+      }}
+    >
+      <div className="flex min-h-0 flex-1 gap-3 overflow-x-auto bg-muted p-4">
+        {groups.map(([status, group]) => (
+          <BoardColumn key={status} status={status} color={group.color} count={group.tasks.length}>
+            {group.tasks.map((task) => (
+              <BoardCard
+                key={task.id}
+                task={task}
+                threads={threadsByTask.get(task.id)}
+                {...cardProps}
+              />
+            ))}
             <AddTask
               status={status}
               newTask={newTask}
@@ -1063,9 +1202,126 @@ function BoardView({
               onSubmit={onSubmitNewTask}
               className="h-8 rounded-md px-2 hover:bg-accent"
             />
-          </div>
-        </section>
-      ))}
+          </BoardColumn>
+        ))}
+      </div>
+      <DragOverlay>
+        {dragging ? (
+          <BoardCardBody
+            task={dragging}
+            threads={threadsByTask.get(dragging.id)}
+            className="rotate-2 cursor-grabbing shadow-lg"
+            {...cardProps}
+          />
+        ) : null}
+      </DragOverlay>
+    </DndContext>
+  );
+}
+
+function BoardColumn({
+  status,
+  color,
+  count,
+  children,
+}: {
+  status: string;
+  color: string;
+  count: number;
+  children: ReactNode;
+}) {
+  const { setNodeRef, isOver } = useDroppable({ id: status });
+  return (
+    <section
+      ref={setNodeRef}
+      className={cn(
+        "flex max-h-full w-68 shrink-0 flex-col rounded-lg border-t-3 bg-muted",
+        isOver && "bg-accent ring-2 ring-primary/40",
+      )}
+      style={{ borderTopColor: color }}
+    >
+      <div className="flex items-center gap-2 px-3 pt-2.5 pb-2">
+        <span className="text-2xs font-semibold tracking-wide text-secondary-label uppercase">
+          {status}
+        </span>
+        <span className="text-xs text-muted-foreground/70">{count}</span>
+      </div>
+      <div className="flex min-h-0 flex-col gap-2 overflow-y-auto px-2 pb-2">{children}</div>
+    </section>
+  );
+}
+
+type BoardCardProps = {
+  task: ClickUpTask;
+  threads: ReadonlyArray<EnvironmentThreadShell> | undefined;
+  statuses: ReadonlyArray<ClickUpListStatus>;
+  busyTaskId: string | null;
+  picked: ReadonlyMap<string, ClickUpTask>;
+  onTogglePicked: (task: ClickUpTask) => void;
+  onChangeStatus: (task: ClickUpTask, status: ClickUpListStatus) => void;
+  onOpenTask: (task: ClickUpTask) => void;
+};
+
+function BoardCard(props: BoardCardProps) {
+  const { setNodeRef, attributes, listeners, isDragging } = useDraggable({ id: props.task.id });
+  return (
+    <div ref={setNodeRef} {...attributes} {...listeners} className="cursor-grab touch-none">
+      {/* The overlay follows the pointer; the original stays as a placeholder. */}
+      <BoardCardBody {...props} className={cn(isDragging && "opacity-40")} />
+    </div>
+  );
+}
+
+function BoardCardBody({
+  task,
+  threads,
+  statuses,
+  busyTaskId,
+  picked,
+  onTogglePicked,
+  onChangeStatus,
+  onOpenTask,
+  className,
+}: BoardCardProps & { className?: string }) {
+  const due = formatDueDate(task.due_date);
+  const priority = task.priority?.priority;
+  return (
+    <div
+      className={cn(
+        "group flex flex-col gap-2 rounded-md border border-border bg-card p-2.5 shadow-xs hover:border-input",
+        className,
+      )}
+    >
+      <div className="flex items-start gap-2">
+        <StatusMenu
+          task={task}
+          statuses={statuses}
+          busy={busyTaskId === task.id}
+          onChange={onChangeStatus}
+        />
+        <button
+          type="button"
+          onClick={() => onOpenTask(task)}
+          className="min-w-0 flex-1 text-left text-sm leading-snug hover:text-primary"
+        >
+          {task.name}
+        </button>
+        <PickBox task={task} picked={picked} onToggle={onTogglePicked} />
+      </div>
+      <TaskThreadsBadge threads={threads} />
+      {due || priority || task.assignees.length > 0 ? (
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          <Assignees task={task} />
+          {due ? <span className={cn(isOverdue(task.due_date) && "text-error")}>{due}</span> : null}
+          {priority ? (
+            <FlagIcon
+              aria-label={PRIORITY_LABELS[priority] ?? "Priority"}
+              className="ml-auto size-3.5"
+              style={{ color: PRIORITY_COLORS[priority] ?? "#87909e" }}
+            />
+          ) : null}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -1163,26 +1419,44 @@ function StatusMenu({
   statuses,
   busy,
   onChange,
+  pill = false,
 }: {
   task: ClickUpTask;
   statuses: ReadonlyArray<ClickUpListStatus>;
   busy: boolean;
   onChange: (task: ClickUpTask, status: ClickUpListStatus) => void;
+  pill?: boolean;
 }) {
   return (
     <Menu>
       <MenuTrigger
         render={
-          <button
-            type="button"
-            disabled={busy || statuses.length === 0}
-            aria-label={`Status: ${task.status.status}`}
-            className="grid size-4 shrink-0 place-items-center rounded-xs border-2 disabled:opacity-50"
-            style={{ borderColor: task.status.color }}
-          />
+          pill ? (
+            <button
+              type="button"
+              disabled={busy || statuses.length === 0}
+              className="flex h-7 items-center gap-1 rounded-md px-2.5 text-xs font-semibold text-white uppercase enabled:hover:brightness-110 disabled:opacity-50"
+              style={{ backgroundColor: task.status.color }}
+            />
+          ) : (
+            <button
+              type="button"
+              disabled={busy || statuses.length === 0}
+              aria-label={`Status: ${task.status.status}`}
+              className="grid size-4 shrink-0 place-items-center rounded-full border-2 disabled:opacity-50"
+              style={{ borderColor: task.status.color }}
+            />
+          )
         }
       >
-        <span className="size-1.5 rounded-xs" style={{ backgroundColor: task.status.color }} />
+        {pill ? (
+          <>
+            {task.status.status}
+            <ChevronRightIcon className="size-3.5" />
+          </>
+        ) : (
+          <span className="size-1.5 rounded-full" style={{ backgroundColor: task.status.color }} />
+        )}
       </MenuTrigger>
       <MenuPopup align="start" side="bottom">
         <MenuRadioGroup
@@ -1195,7 +1469,7 @@ function StatusMenu({
           {statuses.map((entry) => (
             <MenuRadioItem key={entry.status} value={entry.status} closeOnClick>
               <span className="flex items-center gap-2 uppercase">
-                <span className="size-2.5 rounded-xs" style={{ backgroundColor: entry.color }} />
+                <span className="size-2.5 rounded-full" style={{ backgroundColor: entry.color }} />
                 {entry.status}
               </span>
             </MenuRadioItem>
@@ -1222,5 +1496,638 @@ function Assignees({ task }: { task: ClickUpTask }) {
         </span>
       ))}
     </span>
+  );
+}
+
+function TaskThreadsBadge({
+  threads,
+}: {
+  threads: ReadonlyArray<EnvironmentThreadShell> | undefined;
+}) {
+  if (!threads || threads.length === 0) return null;
+  const running = threads.filter(threadIsRunning).length;
+  return (
+    <span
+      className={cn(
+        "flex w-fit shrink-0 items-center gap-1.5 rounded-sm px-1.5 py-0.5 text-2xs font-medium",
+        running > 0 ? "bg-success/10 text-success" : "bg-accent text-muted-foreground",
+      )}
+    >
+      <span
+        className={cn(
+          "size-1.5 rounded-full",
+          running > 0 ? "bg-success" : "bg-muted-foreground/50",
+        )}
+      />
+      {running > 0
+        ? `${running} running`
+        : `${threads.length} thread${threads.length === 1 ? "" : "s"}`}
+    </span>
+  );
+}
+
+const PRIORITY_OPTIONS = ["1", "2", "3", "4"] as const;
+
+function dueDateInputValue(dueDate: string | null): string {
+  if (!dueDate) return "";
+  const date = new Date(Number(dueDate));
+  if (Number.isNaN(date.getTime())) return "";
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${date.getFullYear()}-${month}-${day}`;
+}
+
+const FIELD_LABEL_CLASS = "flex items-center gap-2 text-muted-foreground";
+
+function SectionTitle({ children }: { children: ReactNode }) {
+  return <h3 className="mt-8 mb-2 text-sm font-semibold">{children}</h3>;
+}
+
+function TaskDetailSheet({
+  task,
+  token,
+  statuses,
+  busy,
+  threads,
+  onChangeStatus,
+  onTaskSynced,
+  onTaskDeleted,
+  onClose,
+}: {
+  task: ClickUpTask | null;
+  token: string | null;
+  statuses: ReadonlyArray<ClickUpListStatus>;
+  busy: boolean;
+  threads: ReadonlyArray<EnvironmentThreadShell>;
+  onChangeStatus: (task: ClickUpTask, status: ClickUpListStatus) => void;
+  onTaskSynced: (task: ClickUpTaskDetail) => void;
+  onTaskDeleted: (taskId: string) => void;
+  onClose: () => void;
+}) {
+  const [detail, setDetail] = useState<ClickUpTaskDetail | null>(null);
+  const [comments, setComments] = useState<ReadonlyArray<ClickUpComment>>([]);
+  const [members, setMembers] = useState<ReadonlyArray<ClickUpMember>>([]);
+  const [spaceTags, setSpaceTags] = useState<ReadonlyArray<ClickUpTag>>([]);
+  const [detailError, setDetailError] = useState<{ taskId: string; message: string } | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [nameDraft, setNameDraft] = useState<string | null>(null);
+  const [descriptionDraft, setDescriptionDraft] = useState<string | null>(null);
+  const [subtaskDraft, setSubtaskDraft] = useState("");
+  const [commentDraft, setCommentDraft] = useState("");
+  const taskId = task?.id;
+
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- loads the opened task, its comments, members and tags from the ClickUp API
+  useEffect(() => {
+    if (!taskId || !token) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const [next, nextComments] = await Promise.all([
+          fetchTaskDetail(token, taskId),
+          fetchTaskComments(token, taskId),
+        ]);
+        if (cancelled) return;
+        setDetail(next);
+        setComments(nextComments);
+        const [nextMembers, nextTags] = await Promise.all([
+          next.list ? fetchListMembers(token, next.list.id) : [],
+          next.space ? fetchSpaceTags(token, next.space.id) : [],
+        ]);
+        if (cancelled) return;
+        setMembers(nextMembers);
+        setSpaceTags(nextTags);
+      } catch (cause) {
+        if (!cancelled) setDetailError({ taskId, message: errorMessage(cause) });
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [taskId, token]);
+
+  const loaded = detail?.id === taskId ? detail : null;
+  const loadError = detailError && detailError.taskId === taskId ? detailError.message : null;
+  const editable = token !== null && loaded !== null && !saving;
+  const description = loaded?.markdown_description || loaded?.description || "";
+  const priority = task?.priority?.priority;
+  const taskTags = loaded?.tags ?? [];
+
+  const run = async (action: (token: string, taskId: string) => Promise<unknown>) => {
+    if (!token || !taskId) return false;
+    setSaving(true);
+    setActionError(null);
+    try {
+      await action(token, taskId);
+      if (action === deleteTask) return true;
+      const [next, nextComments] = await Promise.all([
+        fetchTaskDetail(token, taskId),
+        fetchTaskComments(token, taskId),
+      ]);
+      setDetail(next);
+      setComments(nextComments);
+      onTaskSynced(next);
+      return true;
+    } catch (cause) {
+      setActionError(errorMessage(cause));
+      return false;
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const resetDrafts = () => {
+    setNameDraft(null);
+    setDescriptionDraft(null);
+    setSubtaskDraft("");
+    setCommentDraft("");
+    setActionError(null);
+  };
+
+  const saveName = async () => {
+    const name = nameDraft?.trim();
+    setNameDraft(null);
+    if (!name || name === task?.name) return;
+    await run((token, id) => updateTask(token, id, { name }));
+  };
+
+  const saveDescription = async () => {
+    if (descriptionDraft === null) return;
+    if (await run((token, id) => updateTask(token, id, { markdown_content: descriptionDraft })))
+      setDescriptionDraft(null);
+  };
+
+  const toggleAssignee = (member: ClickUpMember, assigned: boolean) =>
+    void run((token, id) =>
+      updateTask(token, id, {
+        assignees: assigned ? { add: [], rem: [member.id] } : { add: [member.id], rem: [] },
+      }),
+    );
+
+  const addSubtask = async () => {
+    const name = subtaskDraft.trim();
+    const listId = loaded?.list?.id;
+    if (!name || !listId) return;
+    if (await run((token, id) => createSubtask(token, listId, id, name))) setSubtaskDraft("");
+  };
+
+  const addComment = async () => {
+    const text = commentDraft.trim();
+    if (!text) return;
+    if (await run((token, id) => createTaskComment(token, id, text))) setCommentDraft("");
+  };
+
+  const remove = async () => {
+    if (!task) return;
+    const confirmed =
+      (await requestConfirmDialog(`Delete "${task.name}" from ClickUp?`, {
+        variant: "destructive",
+      })) ?? window.confirm(`Delete "${task.name}" from ClickUp?`);
+    if (!confirmed) return;
+    if (await run(deleteTask)) {
+      resetDrafts();
+      onTaskDeleted(task.id);
+    }
+  };
+
+  return (
+    <Dialog
+      open={task !== null}
+      onOpenChange={(open) => {
+        if (open) return;
+        resetDrafts();
+        onClose();
+      }}
+    >
+      <DialogPopup className="h-[88vh] max-w-6xl" bottomStickOnMobile={false}>
+        {task ? (
+          <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl text-sm">
+            <div className="flex h-12 shrink-0 items-center gap-2 border-b border-border pr-12 pl-5 text-xs text-muted-foreground">
+              <ListIcon className="size-3.5" />
+              <span className="truncate">{loaded?.list?.name ?? "Task"}</span>
+              <ChevronRightIcon className="size-3.5 shrink-0" />
+              <span className="rounded-sm border border-border px-1.5 py-0.5 font-mono text-2xs">
+                {task.id}
+              </span>
+              <a
+                href={task.url}
+                target="_blank"
+                rel="noreferrer"
+                className="ml-auto flex items-center gap-1 hover:text-foreground"
+              >
+                Open in ClickUp
+                <ExternalLinkIcon className="size-3.5" />
+              </a>
+              <Button
+                variant="ghost-destructive"
+                size="icon-xs"
+                disabled={!editable}
+                onClick={() => void remove()}
+                aria-label="Delete task"
+              >
+                <Trash2Icon />
+              </Button>
+            </div>
+            <div className="flex min-h-0 flex-1 max-md:flex-col">
+              <div className="min-h-0 flex-1 overflow-y-auto px-10 py-6 max-md:px-5">
+                <input
+                  value={nameDraft ?? task.name}
+                  disabled={!editable}
+                  onChange={(event) => setNameDraft(event.target.value)}
+                  onBlur={() => void saveName()}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") event.currentTarget.blur();
+                    if (event.key === "Escape") setNameDraft(null);
+                  }}
+                  aria-label="Task name"
+                  className="w-full rounded-md bg-transparent px-1 -mx-1 text-2xl leading-tight font-bold outline-none hover:bg-accent/50 focus:bg-accent/50"
+                />
+                {actionError ? <p className="mt-2 text-xs text-error">{actionError}</p> : null}
+
+                <dl className="mt-6 grid grid-cols-[7.5rem_minmax(0,1fr)] items-center gap-x-3 gap-y-3 text-xs lg:grid-cols-[7.5rem_minmax(0,1fr)_7.5rem_minmax(0,1fr)]">
+                  <dt className={FIELD_LABEL_CLASS}>
+                    <CircleDotIcon className="size-4" />
+                    Status
+                  </dt>
+                  <dd className="flex items-center gap-2">
+                    <StatusMenu
+                      task={task}
+                      statuses={statuses}
+                      busy={busy}
+                      onChange={onChangeStatus}
+                      pill
+                    />
+                  </dd>
+                  <dt className={FIELD_LABEL_CLASS}>
+                    <UsersIcon className="size-4" />
+                    Assignees
+                  </dt>
+                  <dd>
+                    <Menu>
+                      <MenuTrigger
+                        render={
+                          <button
+                            type="button"
+                            disabled={!editable}
+                            className="flex max-w-full items-center gap-2 rounded-sm px-1 py-0.5 enabled:hover:bg-accent"
+                          />
+                        }
+                      >
+                        <Assignees task={task} />
+                        <span className="truncate">
+                          {task.assignees.map((assignee) => assignee.username).join(", ") ||
+                            "Unassigned"}
+                        </span>
+                      </MenuTrigger>
+                      <MenuPopup align="start" side="bottom">
+                        {members.length === 0 ? (
+                          <MenuItem disabled>No members found</MenuItem>
+                        ) : (
+                          members.map((member) => {
+                            const assigned = task.assignees.some((entry) => entry.id === member.id);
+                            return (
+                              <MenuCheckboxItem
+                                key={member.id}
+                                checked={assigned}
+                                onClick={() => toggleAssignee(member, assigned)}
+                              >
+                                {member.username}
+                              </MenuCheckboxItem>
+                            );
+                          })
+                        )}
+                      </MenuPopup>
+                    </Menu>
+                  </dd>
+                  <dt className={FIELD_LABEL_CLASS}>
+                    <CalendarIcon className="size-4" />
+                    Due date
+                  </dt>
+                  <dd className="flex items-center gap-1">
+                    <Input
+                      type="date"
+                      size="compact"
+                      disabled={!editable}
+                      value={dueDateInputValue(task.due_date)}
+                      onChange={(event) => {
+                        const value = event.target.value;
+                        void run((token, id) =>
+                          updateTask(token, id, {
+                            due_date: value ? new Date(`${value}T12:00:00`).getTime() : null,
+                            due_date_time: false,
+                          }),
+                        );
+                      }}
+                      className="w-40"
+                    />
+                  </dd>
+                  <dt className={FIELD_LABEL_CLASS}>
+                    <FlagIcon className="size-4" />
+                    Priority
+                  </dt>
+                  <dd>
+                    <Menu>
+                      <MenuTrigger
+                        render={
+                          <button
+                            type="button"
+                            disabled={!editable}
+                            className="flex items-center gap-1 rounded-sm px-1 py-0.5 enabled:hover:bg-accent"
+                          />
+                        }
+                      >
+                        <FlagIcon
+                          className="size-3.5"
+                          style={{ color: priority ? PRIORITY_COLORS[priority] : "#87909e" }}
+                        />
+                        {priority ? (PRIORITY_LABELS[priority] ?? "Priority") : "None"}
+                      </MenuTrigger>
+                      <MenuPopup align="start" side="bottom">
+                        <MenuRadioGroup
+                          value={priority ?? ""}
+                          onValueChange={(value) =>
+                            void run((token, id) =>
+                              updateTask(token, id, { priority: value ? Number(value) : null }),
+                            )
+                          }
+                        >
+                          {PRIORITY_OPTIONS.map((value) => (
+                            <MenuRadioItem key={value} value={value} closeOnClick>
+                              <FlagIcon
+                                className="size-3.5"
+                                style={{ color: PRIORITY_COLORS[value] }}
+                              />
+                              {PRIORITY_LABELS[value]}
+                            </MenuRadioItem>
+                          ))}
+                          <MenuRadioItem value="" closeOnClick>
+                            None
+                          </MenuRadioItem>
+                        </MenuRadioGroup>
+                      </MenuPopup>
+                    </Menu>
+                  </dd>
+                  <dt className={FIELD_LABEL_CLASS}>
+                    <TagIcon className="size-4" />
+                    Tags
+                  </dt>
+                  <dd className="flex flex-wrap items-center gap-1">
+                    {taskTags.map((tag) => (
+                      <span
+                        key={tag.name}
+                        className="flex items-center gap-1 rounded-full bg-accent py-0.5 pr-0.5 pl-2 font-medium"
+                        style={tag.tag_bg ? { backgroundColor: tag.tag_bg, color: tag.tag_fg } : {}}
+                      >
+                        {tag.name}
+                        <button
+                          type="button"
+                          disabled={!editable}
+                          onClick={() =>
+                            void run((token, id) => setTaskTag(token, id, tag.name, false))
+                          }
+                          aria-label={`Remove tag ${tag.name}`}
+                          className="grid size-4 place-items-center rounded-xs enabled:hover:bg-black/10"
+                        >
+                          <XIcon className="size-3" />
+                        </button>
+                      </span>
+                    ))}
+                    <Menu>
+                      <MenuTrigger
+                        render={
+                          <Button
+                            variant="ghost-muted"
+                            size="icon-micro"
+                            disabled={!editable}
+                            aria-label="Add tag"
+                          />
+                        }
+                      >
+                        <PlusIcon />
+                      </MenuTrigger>
+                      <MenuPopup align="start" side="bottom">
+                        {spaceTags.filter(
+                          (tag) => !taskTags.some((entry) => entry.name === tag.name),
+                        ).length === 0 ? (
+                          <MenuItem disabled>No more tags in this space</MenuItem>
+                        ) : (
+                          spaceTags
+                            .filter((tag) => !taskTags.some((entry) => entry.name === tag.name))
+                            .map((tag) => (
+                              <MenuItem
+                                key={tag.name}
+                                onClick={() =>
+                                  void run((token, id) => setTaskTag(token, id, tag.name, true))
+                                }
+                              >
+                                {tag.name}
+                              </MenuItem>
+                            ))
+                        )}
+                      </MenuPopup>
+                    </Menu>
+                  </dd>
+                </dl>
+
+                {threads.length > 0 ? (
+                  <>
+                    <SectionTitle>Threads</SectionTitle>
+                    <ul className="space-y-1">
+                      {threads.map((thread) => (
+                        <li key={`${thread.environmentId}:${thread.id}`}>
+                          <Link
+                            to="/$environmentId/$threadId"
+                            params={{ environmentId: thread.environmentId, threadId: thread.id }}
+                            onClick={onClose}
+                            className="flex items-center gap-2 rounded-sm px-1.5 py-1 hover:bg-accent"
+                          >
+                            <span
+                              className={cn(
+                                "size-1.5 shrink-0 rounded-full",
+                                threadIsRunning(thread) ? "bg-success" : "bg-muted-foreground/50",
+                              )}
+                            />
+                            <span className="min-w-0 flex-1 truncate">{thread.title}</span>
+                            <span className="text-2xs text-muted-foreground">
+                              {threadIsRunning(thread) ? "Running" : "Idle"}
+                            </span>
+                          </Link>
+                        </li>
+                      ))}
+                    </ul>
+                  </>
+                ) : null}
+
+                <div className="flex items-center">
+                  <SectionTitle>Description</SectionTitle>
+                  {descriptionDraft === null && editable ? (
+                    <Button
+                      variant="ghost-muted"
+                      size="micro"
+                      className="mt-6 ml-auto"
+                      onClick={() => setDescriptionDraft(description)}
+                    >
+                      <PencilIcon />
+                      Edit
+                    </Button>
+                  ) : null}
+                </div>
+                {loadError ? (
+                  <p className="text-xs text-error">{loadError}</p>
+                ) : token && !loaded ? (
+                  <p className="text-xs text-muted-foreground">Loading…</p>
+                ) : descriptionDraft !== null ? (
+                  <div className="flex flex-col gap-2">
+                    <Textarea
+                      value={descriptionDraft}
+                      onChange={(event) => setDescriptionDraft(event.target.value)}
+                      rows={10}
+                      aria-label="Description"
+                    />
+                    <div className="flex justify-end gap-2">
+                      <Button variant="ghost" size="xs" onClick={() => setDescriptionDraft(null)}>
+                        Cancel
+                      </Button>
+                      <Button size="xs" disabled={saving} onClick={() => void saveDescription()}>
+                        Save
+                      </Button>
+                    </div>
+                  </div>
+                ) : description ? (
+                  <ChatMarkdown text={description} cwd={undefined} parseRawHtml={false} />
+                ) : (
+                  <p className="text-xs text-muted-foreground">No description.</p>
+                )}
+
+                {loaded ? (
+                  <>
+                    <SectionTitle>Subtasks</SectionTitle>
+                    <ul className="rounded-md border border-border empty:hidden">
+                      {(loaded.subtasks ?? []).map((subtask) => (
+                        <li
+                          key={subtask.id}
+                          className="flex h-9 items-center gap-2.5 border-b border-border px-3 last:border-b-0"
+                        >
+                          <span
+                            className="size-3 shrink-0 rounded-full border-2"
+                            style={{
+                              borderColor: subtask.status?.color ?? STATUS_GROUP_FALLBACK_COLOR,
+                            }}
+                          />
+                          <span className="min-w-0 flex-1 truncate">{subtask.name}</span>
+                          <span className="text-2xs text-muted-foreground uppercase">
+                            {subtask.status?.status}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                    {editable || subtaskDraft ? (
+                      <Input
+                        size="compact"
+                        className="mt-2"
+                        placeholder="Add subtask and press Enter"
+                        value={subtaskDraft}
+                        disabled={!editable}
+                        onChange={(event) => setSubtaskDraft(event.target.value)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter") void addSubtask();
+                        }}
+                      />
+                    ) : null}
+                  </>
+                ) : null}
+
+                {loaded?.checklists?.map((checklist) => (
+                  <div key={checklist.id}>
+                    <SectionTitle>{checklist.name}</SectionTitle>
+                    <ul className="space-y-1">
+                      {checklist.items.map((item) => (
+                        <li key={item.id}>
+                          <button
+                            type="button"
+                            disabled={!editable}
+                            onClick={() =>
+                              void run((token) =>
+                                setChecklistItemResolved(
+                                  token,
+                                  checklist.id,
+                                  item.id,
+                                  !item.resolved,
+                                ),
+                              )
+                            }
+                            className="flex w-full items-center gap-2 rounded-sm px-1 py-0.5 text-left enabled:hover:bg-accent"
+                          >
+                            <CheckIcon
+                              className={cn(
+                                "size-3.5 shrink-0",
+                                item.resolved ? "text-primary" : "text-muted-foreground/40",
+                              )}
+                            />
+                            <span
+                              className={cn(item.resolved && "text-muted-foreground line-through")}
+                            >
+                              {item.name}
+                            </span>
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ))}
+              </div>
+              <aside className="flex min-h-0 w-96 shrink-0 flex-col border-l border-border bg-muted/40 max-md:w-full max-md:border-t max-md:border-l-0">
+                <div className="flex h-11 shrink-0 items-center px-4 text-sm font-semibold">
+                  Activity
+                </div>
+                <ul className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 pb-3">
+                  {loaded && comments.length === 0 ? (
+                    <li className="text-xs text-muted-foreground">No comments yet.</li>
+                  ) : null}
+                  {comments.map((comment) => (
+                    <li key={comment.id} className="flex gap-2 text-xs">
+                      <span className="grid size-6 shrink-0 place-items-center rounded-full bg-primary text-4xs font-semibold text-primary-foreground">
+                        {comment.user.username.slice(0, 2).toUpperCase()}
+                      </span>
+                      <div className="min-w-0 flex-1 rounded-lg border border-border bg-card px-3 py-2">
+                        <div className="flex items-baseline gap-2">
+                          <span className="font-semibold">{comment.user.username}</span>
+                          <span className="ml-auto text-2xs text-muted-foreground">
+                            {new Date(Number(comment.date)).toLocaleString()}
+                          </span>
+                        </div>
+                        <p className="mt-1 whitespace-pre-wrap">{comment.comment_text}</p>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+                <div className="flex shrink-0 flex-col gap-2 border-t border-border p-3">
+                  <Textarea
+                    size="sm"
+                    placeholder="Write a comment…"
+                    value={commentDraft}
+                    disabled={!editable}
+                    onChange={(event) => setCommentDraft(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" && (event.metaKey || event.ctrlKey))
+                        void addComment();
+                    }}
+                    aria-label="Comment"
+                  />
+                  <Button
+                    size="xs"
+                    className="self-end"
+                    disabled={!editable || commentDraft.trim().length === 0}
+                    onClick={() => void addComment()}
+                  >
+                    Comment
+                  </Button>
+                </div>
+              </aside>
+            </div>
+          </div>
+        ) : null}
+      </DialogPopup>
+    </Dialog>
   );
 }

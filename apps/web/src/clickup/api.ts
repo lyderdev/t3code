@@ -109,14 +109,12 @@ const LAST_LIST_STORAGE_KEY = "ldcode:clickup:last-list";
 
 export function readLastClickUpList(): { spaceId: string; listId: string } | null {
   if (typeof window === "undefined") return null;
-  const [spaceId, listId] = (window.sessionStorage.getItem(LAST_LIST_STORAGE_KEY) ?? "").split(
-    "\n",
-  );
+  const [spaceId, listId] = (window.localStorage.getItem(LAST_LIST_STORAGE_KEY) ?? "").split("\n");
   return spaceId && listId ? { spaceId, listId } : null;
 }
 
 export function saveLastClickUpList(list: ClickUpList): void {
-  window.sessionStorage.setItem(LAST_LIST_STORAGE_KEY, `${list.spaceId}\n${list.id}`);
+  window.localStorage.setItem(LAST_LIST_STORAGE_KEY, `${list.spaceId}\n${list.id}`);
 }
 
 const CACHE_MS = 5 * 60_000;
@@ -137,6 +135,7 @@ function clickup<T>(
 ): Promise<T> {
   if (init !== undefined) {
     invalidateClickUpCache("/task");
+    invalidateClickUpCache("/tag");
     return request<T>(token, path, init);
   }
   const key = `${token}\n${path}`;
@@ -176,7 +175,9 @@ async function request<T>(
       body?.err ?? body?.error ?? `ClickUp request failed (${response.status})`,
     );
   }
-  return (await response.json()) as T;
+  // DELETE and tag endpoints answer with an empty body.
+  const text = await response.text();
+  return (text ? JSON.parse(text) : undefined) as T;
 }
 
 export async function fetchIdentity(token: string): Promise<ClickUpIdentity> {
@@ -366,15 +367,22 @@ export async function fetchMyTasks(token: string): Promise<ReadonlyArray<ClickUp
 export type ClickUpTaskDetail = ClickUpTask & {
   readonly markdown_description?: string | null;
   readonly description?: string | null;
-  readonly list?: { readonly name: string } | null;
-  readonly tags?: ReadonlyArray<{ readonly name: string }>;
+  readonly list?: { readonly id: string; readonly name: string } | null;
+  readonly space?: { readonly id: string } | null;
+  readonly tags?: ReadonlyArray<ClickUpTag>;
   readonly subtasks?: ReadonlyArray<{
+    readonly id: string;
     readonly name: string;
-    readonly status?: { readonly status: string };
+    readonly status?: { readonly status: string; readonly color?: string };
   }>;
   readonly checklists?: ReadonlyArray<{
+    readonly id: string;
     readonly name: string;
-    readonly items: ReadonlyArray<{ readonly name: string; readonly resolved: boolean }>;
+    readonly items: ReadonlyArray<{
+      readonly id: string;
+      readonly name: string;
+      readonly resolved: boolean;
+    }>;
   }>;
 };
 
@@ -383,4 +391,124 @@ export async function fetchTaskDetail(token: string, taskId: string): Promise<Cl
     token,
     `/task/${taskId}?include_subtasks=true&include_markdown_description=true`,
   );
+}
+
+export type ClickUpTag = {
+  readonly name: string;
+  readonly tag_bg?: string;
+  readonly tag_fg?: string;
+};
+
+export type ClickUpMember = {
+  readonly id: number;
+  readonly username: string;
+  readonly email?: string;
+  readonly initials?: string;
+  readonly color?: string | null;
+};
+
+export type ClickUpComment = {
+  readonly id: string;
+  readonly comment_text: string;
+  readonly date: string;
+  readonly user: { readonly username: string };
+};
+
+export type ClickUpTaskUpdate = {
+  readonly name?: string;
+  readonly markdown_content?: string;
+  readonly priority?: number | null;
+  readonly due_date?: number | null;
+  readonly due_date_time?: boolean;
+  readonly assignees?: { readonly add: ReadonlyArray<number>; readonly rem: ReadonlyArray<number> };
+};
+
+export async function updateTask(
+  token: string,
+  taskId: string,
+  update: ClickUpTaskUpdate,
+): Promise<void> {
+  await clickup<unknown>(token, `/task/${taskId}`, { method: "PUT", body: update });
+}
+
+export async function deleteTask(token: string, taskId: string): Promise<void> {
+  await clickup<unknown>(token, `/task/${taskId}`, { method: "DELETE", body: undefined });
+}
+
+export async function createSubtask(
+  token: string,
+  listId: string,
+  parentId: string,
+  name: string,
+): Promise<void> {
+  await clickup<unknown>(token, `/list/${listId}/task`, {
+    method: "POST",
+    body: { name, parent: parentId },
+  });
+}
+
+export async function setChecklistItemResolved(
+  token: string,
+  checklistId: string,
+  itemId: string,
+  resolved: boolean,
+): Promise<void> {
+  await clickup<unknown>(token, `/checklist/${checklistId}/checklist_item/${itemId}`, {
+    method: "PUT",
+    body: { resolved },
+  });
+  invalidateClickUpCache("/task");
+}
+
+export async function fetchListMembers(
+  token: string,
+  listId: string,
+): Promise<ReadonlyArray<ClickUpMember>> {
+  const body = await clickup<{ members: ReadonlyArray<ClickUpMember> }>(
+    token,
+    `/list/${listId}/member`,
+  );
+  return body.members;
+}
+
+export async function fetchSpaceTags(
+  token: string,
+  spaceId: string,
+): Promise<ReadonlyArray<ClickUpTag>> {
+  const body = await clickup<{ tags: ReadonlyArray<ClickUpTag> }>(token, `/space/${spaceId}/tag`);
+  return body.tags;
+}
+
+export async function setTaskTag(
+  token: string,
+  taskId: string,
+  tagName: string,
+  present: boolean,
+): Promise<void> {
+  await clickup<unknown>(token, `/task/${taskId}/tag/${encodeURIComponent(tagName)}`, {
+    method: present ? "POST" : "DELETE",
+    body: {},
+  });
+}
+
+export async function fetchTaskComments(
+  token: string,
+  taskId: string,
+): Promise<ReadonlyArray<ClickUpComment>> {
+  const body = await clickup<{ comments: ReadonlyArray<ClickUpComment> }>(
+    token,
+    `/task/${taskId}/comment`,
+  );
+  return body.comments;
+}
+
+export async function createTaskComment(
+  token: string,
+  taskId: string,
+  text: string,
+): Promise<void> {
+  await clickup<unknown>(token, `/task/${taskId}/comment`, {
+    method: "POST",
+    body: { comment_text: text, notify_all: false },
+  });
 }
