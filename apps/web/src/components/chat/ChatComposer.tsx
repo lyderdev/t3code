@@ -203,7 +203,11 @@ import { ComposerPendingUserInputPanel } from "./ComposerPendingUserInputPanel";
 import { ComposerPlanFollowUpBanner } from "./ComposerPlanFollowUpBanner";
 import { resolveComposerMenuActiveItemId } from "./composerMenuHighlight";
 import { buildPullRequestReferenceContext } from "../pullRequest/pullRequestDetail.logic";
-import { buildClickUpTaskContext, fillClickUpTaskChip } from "../../clickup/clickupTaskMentions";
+import {
+  buildClickUpTaskContext,
+  fillClickUpTaskChip,
+  openClickUpTaskInRightPanel,
+} from "../../clickup/clickupTaskMentions";
 import { getComposerPromptInjectionState, getComposerReasoningStep } from "./composerProviderState";
 import { readPromptUltrathink } from "./TraitsPicker";
 import {
@@ -746,6 +750,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     openPullRequest: (event: React.MouseEvent<HTMLElement>, url: string) => {
       openPrLink(event, url);
     },
+    openClickUpTask: (taskId: string) => openClickUpTaskInRightPanel(routeThreadRef, taskId),
   };
   const composerContextRecords = composerContextRecordsFromDraft({
     terminalContexts: composerTerminalContexts,

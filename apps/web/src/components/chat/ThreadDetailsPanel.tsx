@@ -20,6 +20,7 @@ import { memo, type ComponentProps } from "react";
 import { ThreadDetailsCard } from "./ThreadDetailsCard";
 import { OpenInPicker } from "./OpenInPicker";
 import { ThreadDetailsSection } from "./ThreadDetailsSection";
+import { ClickUpThreadTasks } from "../../clickup/ClickUpThreadTasks";
 import { ThreadAutomationsPanel } from "./ThreadAutomationsPanel";
 import { ThreadRelationshipsPanel } from "./ThreadRelationshipsControl";
 import { ThreadServersPanel } from "./ThreadServersPanel";
@@ -36,6 +37,7 @@ interface ThreadDetailsPanelProps extends Pick<
   projectId: ProjectId;
   worktreePath: string | null;
   isServerThread: boolean;
+  messages: ComponentProps<typeof ClickUpThreadTasks>["messages"];
   draftId?: DraftId;
   activeProjectName: string | undefined;
   activeProjectScripts: ReadonlyArray<ProjectScript> | undefined;
@@ -180,6 +182,8 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
               </div>
             </ThreadDetailsSection>
           ) : null}
+
+          <ClickUpThreadTasks threadRef={activeThreadRef} messages={props.messages} />
 
           {density === "full" && !props.draftId ? (
             <ThreadServersPanel environmentId={props.environmentId} threadId={props.threadId} />

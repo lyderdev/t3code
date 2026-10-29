@@ -32,6 +32,7 @@ import { TerminalContextInlineChip } from "./TerminalContextInlineChip";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import {
   ContextChipPopover as UserMessageContextPopover,
+  ClickUpTaskChip,
   FileChip,
   ImageChipButton,
   PULL_REQUEST_CHIP_KINDS,
@@ -60,6 +61,10 @@ import {
   type ReviewCommentContext,
 } from "../../reviewCommentContext";
 import { TimelineRowCtx } from "./timelineRowContext";
+import {
+  clickUpTaskIdFromSection,
+  openClickUpTaskInRightPanel,
+} from "../../clickup/clickupTaskMentions";
 
 function UserMessageMentionChip(props: {
   record: Extract<KnownComposerContextRecord, { kind: "mention" }>;
@@ -134,6 +139,16 @@ function UserMessagePullRequestContextChip(props: {
       kind={props.kind}
       copyMarkdown={props.copyMarkdown}
       onOpen={openPullRequest}
+    />
+  );
+}
+
+function UserMessageClickUpTaskChip(props: { label: string; taskId: string }) {
+  const { threadRef } = use(TimelineRowCtx);
+  return (
+    <ClickUpTaskChip
+      label={props.label}
+      onOpen={threadRef ? () => openClickUpTaskInRightPanel(threadRef, props.taskId) : undefined}
     />
   );
 }
@@ -440,6 +455,15 @@ const userMessageContextPresentationRegistry = createContextPresentationRegistry
       render: (record, context) => {
         if (record.kind !== "review-comment") {
           return <UnavailableUserMessageContextChip {...context} />;
+        }
+        const clickUpTaskId = clickUpTaskIdFromSection(record.sectionId);
+        if (clickUpTaskId !== null) {
+          return (
+            <UserMessageClickUpTaskChip
+              label={reviewCommentContextLabel(record)}
+              taskId={clickUpTaskId}
+            />
+          );
         }
         const isPullRequest = isPullRequestSummaryContext(record);
         const label = reviewCommentContextLabel(record);

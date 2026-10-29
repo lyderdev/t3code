@@ -1,5 +1,5 @@
 import type { EnvironmentId, PullRequestContextMetadata } from "@t3tools/contracts";
-import { CircleDashedIcon, FilmIcon, ImageIcon } from "lucide-react";
+import { CircleDashedIcon, FilmIcon, ImageIcon, ListTodoIcon } from "lucide-react";
 import { useEffect, useState, type ComponentProps, type MouseEvent, type ReactNode } from "react";
 import { useAssetUrlState } from "~/assets/assetUrls";
 import { documentChipKindForFileName } from "~/pierre-icons";
@@ -336,5 +336,19 @@ export function UnresolvedChip(props: { label: string; tooltip: string; copyMark
       data-markdown-copy={props.copyMarkdown}
       tooltip={props.tooltip}
     />
+  );
+}
+
+export function ClickUpTaskChip(props: { label: string; onOpen: (() => void) | undefined }) {
+  return (
+    <ContextChip
+      kind="review-comment"
+      aria-label={`Open ClickUp task, ${props.label}`}
+      render={<button type="button" disabled={props.onOpen === undefined} />}
+      onClick={props.onOpen}
+    >
+      <ListTodoIcon />
+      <ContextChipLabel>{props.label}</ContextChipLabel>
+    </ContextChip>
   );
 }

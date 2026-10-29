@@ -35,6 +35,7 @@ import {
 } from "~/lib/composerContextRecords";
 import type { TerminalContextDraft } from "~/lib/terminalContext";
 import type { ReviewCommentContext } from "~/reviewCommentContext";
+import { clickUpTaskIdFromSection } from "~/clickup/clickupTaskMentions";
 import { ComposerPendingTerminalContextChip } from "./chat/ComposerPendingTerminalContexts";
 import { EnvironmentContextChip } from "./EnvironmentContextChip";
 import { ThreadContextChip } from "./ThreadContextChip";
@@ -47,6 +48,7 @@ import type { ContextChipKind } from "./ContextChip";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 import {
   ContextChipPopover,
+  ClickUpTaskChip,
   ContextChipShell,
   FileChip,
   ImageChipButton,
@@ -76,6 +78,7 @@ export interface ComposerContextActions {
   openFile: (fileId: string) => void;
   openMention: (path: string) => void;
   openPullRequest: (event: MouseEvent<HTMLElement>, url: string) => void;
+  openClickUpTask: (taskId: string) => void;
 }
 
 export const ComposerContextActionsContext = createContext<ComposerContextActions>({
@@ -85,6 +88,7 @@ export const ComposerContextActionsContext = createContext<ComposerContextAction
   openFile: () => {},
   openMention: () => {},
   openPullRequest: () => {},
+  openClickUpTask: () => {},
 });
 
 export type ComposerDraftContextRecords = ReadonlyMap<string, ComposerDraftContextRecord>;
@@ -281,6 +285,16 @@ function PullRequestContextChip(props: { record: ReviewCommentContext; kind: Con
   );
 }
 
+function ClickUpTaskContextChip(props: { record: ReviewCommentContext; taskId: string }) {
+  const actions = use(ComposerContextActionsContext);
+  return (
+    <ClickUpTaskChip
+      label={reviewCommentContextLabel(props.record)}
+      onOpen={() => actions.openClickUpTask(props.taskId)}
+    />
+  );
+}
+
 function previewAnnotationTooltip(annotation: PreviewAnnotationPayload): string {
   const lines = [annotation.pageTitle?.trim() || annotation.pageUrl];
   if (annotation.comment.trim()) lines.push("", annotation.comment.trim());
@@ -426,6 +440,10 @@ const composerContextPresentationRegistry = createContextPresentationRegistry<
       render: (entry, context, definition) => {
         if (entry.kind !== "review-comment") {
           return <UnresolvedContextChip label={context.label} />;
+        }
+        const clickUpTaskId = clickUpTaskIdFromSection(entry.record.sectionId);
+        if (clickUpTaskId !== null) {
+          return <ClickUpTaskContextChip record={entry.record} taskId={clickUpTaskId} />;
         }
         const isPullRequest = isPullRequestSummaryContext(entry.record);
         const pullRequestState = pullRequestContextDisplayState(entry.record) ?? "unknown";

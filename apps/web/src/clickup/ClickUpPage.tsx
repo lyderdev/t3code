@@ -16,6 +16,7 @@ import {
 } from "@t3tools/client-runtime/state/models";
 import { Link } from "@tanstack/react-router";
 import {
+  ArrowLeftIcon,
   CalendarIcon,
   CheckIcon,
   ChevronDownIcon,
@@ -24,6 +25,8 @@ import {
   ExternalLinkIcon,
   FlagIcon,
   ListIcon,
+  ListFilterIcon,
+  ListTreeIcon,
   PanelLeftIcon,
   PencilIcon,
   PlugZapIcon,
@@ -35,7 +38,7 @@ import {
   UsersIcon,
   XIcon,
 } from "lucide-react";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { Fragment, useEffect, useRef, useState, type ElementType, type ReactNode } from "react";
 
 import { useComposerDraftStore } from "~/composerDraftStore";
 import { requestConfirmDialog } from "~/confirmDialog";
@@ -58,10 +61,12 @@ import {
   MenuRadioGroup,
   MenuRadioItem,
   MenuSeparator,
+  MenuSub,
+  MenuSubPopup,
+  MenuSubTrigger,
   MenuTrigger,
 } from "~/components/ui/menu";
 import { RefreshIcon } from "~/components/ui/refresh-icon";
-import { Dialog, DialogPopup } from "~/components/ui/dialog";
 import ChatMarkdown from "~/components/ChatMarkdown";
 import {
   createSubtask,
@@ -106,7 +111,21 @@ import {
   type ClickUpTaskDetail,
   type ClickUpWorkspace,
 } from "./api";
-import { buildClickUpTaskContext, fillClickUpTaskChip } from "./clickupTaskMentions";
+import {
+  buildClickUpTaskContext,
+  fillClickUpTaskChip,
+  setClickUpOpenTask,
+  useClickUpOpenTaskStore,
+} from "./clickupTaskMentions";
+import {
+  activeFilterCount,
+  DUE_FILTER_OPTIONS,
+  EMPTY_TASK_FILTERS,
+  taskMatchesFilters,
+  UNASSIGNED_FILTER,
+  type TaskFilters,
+} from "./taskFilters";
+import { nestSubtasks, SUBTASK_MODE_OPTIONS, type SubtaskMode } from "./subtasks";
 
 const STATUS_GROUP_FALLBACK_COLOR = "#87909e";
 const PRIORITY_COLORS: Record<string, string> = {
@@ -162,21 +181,24 @@ function groupTasksByStatus(
 
 type PageUiState = {
   readonly view: View;
-  readonly openTaskId: string | null;
   readonly sidebarOpen: boolean;
+  readonly subtasks: SubtaskMode;
 };
 const UI_STORAGE_KEY = "ldcode:clickup:ui";
 
 function readPageUiState(): PageUiState {
-  const fallback: PageUiState = { view: "list", openTaskId: null, sidebarOpen: true };
+  const fallback: PageUiState = { view: "list", sidebarOpen: true, subtasks: "collapsed" };
   try {
     const parsed = JSON.parse(window.localStorage.getItem(UI_STORAGE_KEY) ?? "{}") as Partial<
       Record<keyof PageUiState, unknown>
     >;
     return {
       view: parsed.view === "board" ? "board" : "list",
-      openTaskId: typeof parsed.openTaskId === "string" ? parsed.openTaskId : null,
       sidebarOpen: parsed.sidebarOpen !== false,
+      subtasks:
+        parsed.subtasks === "expanded" || parsed.subtasks === "separate"
+          ? parsed.subtasks
+          : "collapsed",
     };
   } catch {
     return fallback;
@@ -228,10 +250,15 @@ export function ClickUpPage() {
     window.localStorage.setItem(UI_STORAGE_KEY, JSON.stringify(next));
     setUi(next);
   };
-  const { view, openTaskId, sidebarOpen } = ui;
+  const { view, sidebarOpen } = ui;
   const setView = (next: View) => updateUi({ view: next });
-  const setOpenTaskId = (next: string | null) => updateUi({ openTaskId: next });
+  const openTaskId = useClickUpOpenTaskStore((state) => state.taskId);
+  const setOpenTaskId = setClickUpOpenTask;
+  const [unlistedTask, setUnlistedTask] = useState<ClickUpTask | null>(null);
   const [query, setQuery] = useState("");
+  const [filters, setFilters] = useState<TaskFilters>(EMPTY_TASK_FILTERS);
+  // Parents flipped away from the current subtask mode's default.
+  const [toggledParents, setToggledParents] = useState<ReadonlySet<string>>(() => new Set());
   const [creating, setCreating] = useState(false);
   const taskRequest = useRef(0);
 
@@ -344,6 +371,7 @@ export function ClickUpPage() {
     setStatuses([]);
     setTasks([]);
     setPicked(new Map());
+    setFilters(EMPTY_TASK_FILTERS);
     setOpenTaskId(null);
     setError(null);
   };
@@ -392,6 +420,7 @@ export function ClickUpPage() {
 
   const selectList = async (list: ClickUpList) => {
     setSelectedList(list);
+    setFilters(EMPTY_TASK_FILTERS);
     saveLastClickUpList(list);
     if (mode !== "live" || !token) {
       setStatuses(DEMO_STATUSES);
@@ -524,11 +553,45 @@ export function ClickUpPage() {
   };
 
   const needle = query.trim().toLowerCase();
-  const groupedTasks = groupTasksByStatus(
-    needle ? tasks.filter((task) => task.name.toLowerCase().includes(needle)) : tasks,
-    statuses,
+  const visibleTasks = tasks.filter(
+    (task) =>
+      (needle === "" || task.name.toLowerCase().includes(needle)) &&
+      taskMatchesFilters(task, filters),
   );
-  const openTask = tasks.find((task) => task.id === openTaskId) ?? null;
+  const nested = nestSubtasks(visibleTasks, ui.subtasks);
+  const groupedTasks = groupTasksByStatus(nested.roots, statuses);
+  const setSubtaskMode = (subtasks: SubtaskMode) => {
+    setToggledParents(new Set());
+    updateUi({ subtasks });
+  };
+  const toggleSubtasks = (taskId: string) =>
+    setToggledParents((current) => {
+      const next = new Set(current);
+      if (!next.delete(taskId)) next.add(taskId);
+      return next;
+    });
+  const listedOpenTask = tasks.find((task) => task.id === openTaskId) ?? null;
+  const openTask = listedOpenTask ?? (unlistedTask?.id === openTaskId ? unlistedTask : null);
+  const fetchUnlistedTask =
+    openTaskId !== null && listedOpenTask === null && !loadingTasks && !connecting
+      ? openTaskId
+      : null;
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- a mentioned task can live outside the loaded list, so it is read from the ClickUp API
+  useEffect(() => {
+    if (fetchUnlistedTask === null || mode !== "live" || !token) return;
+    let cancelled = false;
+    fetchTaskDetail(token, fetchUnlistedTask).then(
+      (task) => {
+        if (!cancelled) setUnlistedTask(task);
+      },
+      (cause) => {
+        if (!cancelled) setError(errorMessage(cause));
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [fetchUnlistedTask, mode, token]);
   const activeSpaceName =
     spaces.find((space) => space.id === selectedList?.spaceId)?.name ??
     workspace?.name ??
@@ -693,7 +756,7 @@ export function ClickUpPage() {
         </div>
       </aside>
 
-      <div className="flex min-w-0 flex-1 flex-col">
+      <div className={cn("min-w-0 flex-1 flex-col", openTask ? "hidden" : "flex")}>
         <header className="flex h-12 shrink-0 items-center gap-2 border-b border-border px-4">
           <Button
             variant="ghost-muted"
@@ -709,7 +772,11 @@ export function ClickUpPage() {
             <span className="truncate font-semibold">{selectedList?.name ?? "All tasks"}</span>
           </div>
           <div className="ml-auto flex items-center gap-1">
-            <span className="mr-1 text-xs text-muted-foreground">{tasks.length} tasks</span>
+            <span className="mr-1 text-xs text-muted-foreground">
+              {visibleTasks.length === tasks.length
+                ? `${tasks.length} tasks`
+                : `${visibleTasks.length} of ${tasks.length} tasks`}
+            </span>
             <button
               type="button"
               onClick={() => {
@@ -767,17 +834,49 @@ export function ClickUpPage() {
                 {label}
               </button>
             ))}
-            <div className="ml-auto w-56">
-              <InputGroup>
-                <InputGroupAddon>
-                  <SearchIcon />
-                </InputGroupAddon>
-                <InputGroupInput
-                  placeholder="Search tasks…"
-                  value={query}
-                  onChange={(event) => setQuery(event.target.value)}
-                />
-              </InputGroup>
+            <div className="ml-auto flex items-center gap-2">
+              <Menu>
+                <MenuTrigger
+                  render={
+                    <button
+                      type="button"
+                      className="flex items-center gap-1 rounded-md border border-input px-2 py-1.5 text-xs font-medium text-secondary-label hover:bg-accent"
+                    />
+                  }
+                >
+                  <ListTreeIcon className="size-3.5" />
+                  Subtasks
+                </MenuTrigger>
+                <MenuPopup align="end" side="bottom">
+                  <MenuGroup>
+                    <MenuGroupLabel>Show subtasks</MenuGroupLabel>
+                    <MenuRadioGroup value={ui.subtasks}>
+                      {SUBTASK_MODE_OPTIONS.map(([value, label]) => (
+                        <MenuRadioItem
+                          key={value}
+                          value={value}
+                          onClick={() => setSubtaskMode(value)}
+                        >
+                          {label}
+                        </MenuRadioItem>
+                      ))}
+                    </MenuRadioGroup>
+                  </MenuGroup>
+                </MenuPopup>
+              </Menu>
+              <TaskFilterMenu tasks={tasks} filters={filters} onChange={setFilters} />
+              <div className="w-56">
+                <InputGroup>
+                  <InputGroupAddon>
+                    <SearchIcon />
+                  </InputGroupAddon>
+                  <InputGroupInput
+                    placeholder="Search tasks…"
+                    value={query}
+                    onChange={(event) => setQuery(event.target.value)}
+                  />
+                </InputGroup>
+              </div>
             </div>
           </div>
         ) : null}
@@ -855,6 +954,9 @@ export function ClickUpPage() {
               onChangeStatus={(task, status) => void changeStatus(task, status)}
               onOpenTask={(task) => setOpenTaskId(task.id)}
               threadsByTask={threadsByTask}
+              subtasks={nested.children}
+              isExpanded={(taskId) => (ui.subtasks === "expanded") !== toggledParents.has(taskId)}
+              onToggleSubtasks={toggleSubtasks}
             />
           )}
         </div>
@@ -889,6 +991,177 @@ export function ClickUpPage() {
         onClose={() => setOpenTaskId(null)}
       />
     </div>
+  );
+}
+
+function TaskFilterMenu({
+  tasks,
+  filters,
+  onChange,
+}: {
+  tasks: ReadonlyArray<ClickUpTask>;
+  filters: TaskFilters;
+  onChange: (next: TaskFilters) => void;
+}) {
+  const statusOptions = new Map<string, string>();
+  const assigneeOptions = new Map<string, string>();
+  const tagOptions = new Map<string, string>();
+  for (const task of tasks) {
+    statusOptions.set(task.status.status, task.status.color);
+    for (const assignee of task.assignees) {
+      assigneeOptions.set(String(assignee.id), assignee.username);
+    }
+    for (const tag of task.tags ?? []) {
+      tagOptions.set(tag.name, tag.tag_bg ?? STATUS_GROUP_FALLBACK_COLOR);
+    }
+  }
+  const count = activeFilterCount(filters);
+  return (
+    <Menu>
+      <MenuTrigger
+        render={
+          <button
+            type="button"
+            className="flex items-center gap-1 rounded-md border border-input px-2 py-1.5 text-xs font-medium text-secondary-label hover:bg-accent"
+          />
+        }
+      >
+        <ListFilterIcon className="size-3.5" />
+        Filters
+        {count > 0 ? (
+          <span className="rounded-full bg-primary/15 px-1.5 text-2xs font-semibold text-primary tabular-nums">
+            {count}
+          </span>
+        ) : null}
+      </MenuTrigger>
+      <MenuPopup align="end" side="bottom" width="content">
+        <TaskFilterCheckboxGroup
+          label="Status"
+          Icon={CircleDotIcon}
+          options={[...statusOptions].map(([value, color]) => ({ value, label: value, color }))}
+          selected={filters.statuses}
+          onChange={(statuses) => onChange({ ...filters, statuses })}
+        />
+        <TaskFilterCheckboxGroup
+          label="Assignee"
+          Icon={UsersIcon}
+          options={[
+            { value: UNASSIGNED_FILTER, label: "Unassigned" },
+            ...[...assigneeOptions].map(([value, label]) => ({ value, label })),
+          ]}
+          selected={filters.assignees}
+          onChange={(assignees) => onChange({ ...filters, assignees })}
+        />
+        <TaskFilterCheckboxGroup
+          label="Priority"
+          Icon={FlagIcon}
+          options={[
+            ...Object.entries(PRIORITY_LABELS).map(([value, label]) => ({
+              value,
+              label,
+              color: PRIORITY_COLORS[value],
+            })),
+            { value: "none", label: "No priority" },
+          ]}
+          selected={filters.priorities}
+          onChange={(priorities) => onChange({ ...filters, priorities })}
+        />
+        {tagOptions.size > 0 ? (
+          <TaskFilterCheckboxGroup
+            label="Tags"
+            Icon={TagIcon}
+            options={[...tagOptions].map(([value, color]) => ({ value, label: value, color }))}
+            selected={filters.tags}
+            onChange={(tags) => onChange({ ...filters, tags })}
+          />
+        ) : null}
+        <MenuSub>
+          <MenuSubTrigger>
+            <CalendarIcon className="size-3.5" />
+            <span className="flex-1">Due date</span>
+            <span className="text-xs text-muted-foreground">
+              {DUE_FILTER_OPTIONS.find(([value]) => value === filters.due)?.[1] ?? "Any"}
+            </span>
+          </MenuSubTrigger>
+          <MenuSubPopup>
+            <MenuRadioGroup value={filters.due ?? ""}>
+              <MenuRadioItem value="" onClick={() => onChange({ ...filters, due: null })}>
+                Any
+              </MenuRadioItem>
+              {DUE_FILTER_OPTIONS.map(([value, label]) => (
+                <MenuRadioItem
+                  key={value}
+                  value={value}
+                  onClick={() => onChange({ ...filters, due: value })}
+                >
+                  {label}
+                </MenuRadioItem>
+              ))}
+            </MenuRadioGroup>
+          </MenuSubPopup>
+        </MenuSub>
+        <MenuSeparator />
+        <MenuItem disabled={count === 0} onClick={() => onChange(EMPTY_TASK_FILTERS)}>
+          Clear filters
+        </MenuItem>
+      </MenuPopup>
+    </Menu>
+  );
+}
+
+function TaskFilterCheckboxGroup({
+  label,
+  Icon,
+  options,
+  selected,
+  onChange,
+}: {
+  label: string;
+  Icon: ElementType<{ className?: string }>;
+  options: ReadonlyArray<{
+    readonly value: string;
+    readonly label: string;
+    readonly color?: string | undefined;
+  }>;
+  selected: ReadonlyArray<string>;
+  onChange: (next: ReadonlyArray<string>) => void;
+}) {
+  return (
+    <MenuSub>
+      <MenuSubTrigger>
+        <Icon className="size-3.5" />
+        <span className="flex-1">{label}</span>
+        <span className="text-xs text-muted-foreground">
+          {selected.length === 0 ? "Any" : `${selected.length} selected`}
+        </span>
+      </MenuSubTrigger>
+      <MenuSubPopup>
+        {options.map((option) => (
+          <MenuCheckboxItem
+            key={option.value}
+            checked={selected.includes(option.value)}
+            onCheckedChange={(checked) =>
+              onChange(
+                checked
+                  ? [...selected, option.value]
+                  : selected.filter((value) => value !== option.value),
+              )
+            }
+          >
+            <span className="flex min-w-0 items-center gap-2">
+              {option.color ? (
+                <span
+                  aria-hidden
+                  className="size-2.5 shrink-0 rounded-full"
+                  style={{ backgroundColor: option.color }}
+                />
+              ) : null}
+              <span className="truncate">{option.label}</span>
+            </span>
+          </MenuCheckboxItem>
+        ))}
+      </MenuSubPopup>
+    </MenuSub>
   );
 }
 
@@ -1001,6 +1274,9 @@ type TaskViewProps = {
   onChangeStatus: (task: ClickUpTask, status: ClickUpListStatus) => void;
   onOpenTask: (task: ClickUpTask) => void;
   threadsByTask: ReadonlyMap<string, ReadonlyArray<EnvironmentThreadShell>>;
+  subtasks: ReadonlyMap<string, ReadonlyArray<ClickUpTask>>;
+  isExpanded: (taskId: string) => boolean;
+  onToggleSubtasks: (taskId: string) => void;
 };
 
 function TaskView(props: TaskViewProps) {
@@ -1036,6 +1312,9 @@ function ListView({
   onChangeStatus,
   onOpenTask,
   threadsByTask,
+  subtasks,
+  isExpanded,
+  onToggleSubtasks,
 }: TaskViewProps) {
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(() => new Set());
   const toggle = (status: string) =>
@@ -1044,6 +1323,72 @@ function ListView({
       if (!next.delete(status)) next.add(status);
       return next;
     });
+
+  const renderRow = (task: ClickUpTask, depth: number): ReactNode => {
+    const due = formatDueDate(task.due_date);
+    const priority = task.priority?.priority;
+    const children = subtasks.get(task.id) ?? [];
+    const expanded = children.length > 0 && isExpanded(task.id);
+    return (
+      <Fragment key={task.id}>
+        <div className="group flex h-9 items-center gap-3 border-b border-border pr-2 hover:bg-accent">
+          <PickBox task={task} picked={picked} onToggle={onTogglePicked} />
+          {depth > 0 ? (
+            <span aria-hidden className="shrink-0" style={{ width: depth * 20 }} />
+          ) : null}
+          <SubtaskToggle
+            count={children.length}
+            expanded={expanded}
+            onToggle={() => onToggleSubtasks(task.id)}
+          />
+          <StatusMenu
+            task={task}
+            statuses={statuses}
+            busy={busyTaskId === task.id}
+            onChange={onChangeStatus}
+          />
+          <div className="flex min-w-0 flex-1 items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() => onOpenTask(task)}
+              className="min-w-0 truncate text-left text-sm hover:text-primary"
+            >
+              {task.name}
+            </button>
+            {children.length > 0 ? (
+              <SubtaskCount count={children.length} onToggle={() => onToggleSubtasks(task.id)} />
+            ) : null}
+          </div>
+          <TaskThreadsBadge threads={threadsByTask.get(task.id)} />
+          <span className="w-20">
+            <Assignees task={task} />
+          </span>
+          <span
+            className={cn(
+              "w-20 text-xs",
+              isOverdue(task.due_date) ? "text-error" : "text-muted-foreground",
+            )}
+          >
+            {due ?? "–"}
+          </span>
+          <span className="flex w-20 items-center gap-1 text-xs text-muted-foreground">
+            {priority ? (
+              <>
+                <FlagIcon
+                  className="size-3.5"
+                  style={{ color: PRIORITY_COLORS[priority] ?? "#87909e" }}
+                />
+                {PRIORITY_LABELS[priority] ?? "Priority"}
+              </>
+            ) : (
+              "–"
+            )}
+          </span>
+        </div>
+        {expanded ? children.map((child) => renderRow(child, depth + 1)) : null}
+      </Fragment>
+    );
+  };
 
   // ClickUp hides empty statuses in list view, except the one a new task is being added to.
   return groups
@@ -1075,69 +1420,20 @@ function ListView({
           </div>
           {isCollapsed ? null : (
             <>
-              <div className="flex h-7 items-center gap-3 border-b border-border pr-2 pl-7 text-2xs font-medium text-muted-foreground/70">
+              <div className="flex h-7 items-center gap-3 border-b border-border pr-2 pl-14 text-2xs font-medium text-muted-foreground/70">
                 <span className="flex-1">Name</span>
                 <span className="w-20">Assignee</span>
                 <span className="w-20">Due date</span>
                 <span className="w-20">Priority</span>
               </div>
-              {group.tasks.map((task) => {
-                const due = formatDueDate(task.due_date);
-                const priority = task.priority?.priority;
-                return (
-                  <div
-                    key={task.id}
-                    className="group flex h-9 items-center gap-3 border-b border-border pr-2 hover:bg-accent"
-                  >
-                    <PickBox task={task} picked={picked} onToggle={onTogglePicked} />
-                    <StatusMenu
-                      task={task}
-                      statuses={statuses}
-                      busy={busyTaskId === task.id}
-                      onChange={onChangeStatus}
-                    />
-                    <button
-                      type="button"
-                      onClick={() => onOpenTask(task)}
-                      className="min-w-0 flex-1 truncate text-left text-sm hover:text-primary"
-                    >
-                      {task.name}
-                    </button>
-                    <TaskThreadsBadge threads={threadsByTask.get(task.id)} />
-                    <span className="w-20">
-                      <Assignees task={task} />
-                    </span>
-                    <span
-                      className={cn(
-                        "w-20 text-xs",
-                        isOverdue(task.due_date) ? "text-error" : "text-muted-foreground",
-                      )}
-                    >
-                      {due ?? "–"}
-                    </span>
-                    <span className="flex w-20 items-center gap-1 text-xs text-muted-foreground">
-                      {priority ? (
-                        <>
-                          <FlagIcon
-                            className="size-3.5"
-                            style={{ color: PRIORITY_COLORS[priority] ?? "#87909e" }}
-                          />
-                          {PRIORITY_LABELS[priority] ?? "Priority"}
-                        </>
-                      ) : (
-                        "–"
-                      )}
-                    </span>
-                  </div>
-                );
-              })}
+              {group.tasks.map((task) => renderRow(task, 0))}
               <AddTask
                 status={status}
                 newTask={newTask}
                 creating={creating}
                 onChange={onNewTaskChange}
                 onSubmit={onSubmitNewTask}
-                className="h-9 border-b border-border pl-7"
+                className="h-9 border-b border-border pl-14"
               />
             </>
           )}
@@ -1159,6 +1455,9 @@ function BoardView({
   onChangeStatus,
   onOpenTask,
   threadsByTask,
+  subtasks,
+  isExpanded,
+  onToggleSubtasks,
 }: TaskViewProps) {
   const [draggingId, setDraggingId] = useState<string | null>(null);
   // Distance keeps clicks on the name, status menu and pick box from starting a drag.
@@ -1169,7 +1468,17 @@ function BoardView({
   const dragging = draggingId
     ? groups.flatMap(([, group]) => group.tasks).find((task) => task.id === draggingId)
     : undefined;
-  const cardProps = { statuses, busyTaskId, picked, onTogglePicked, onChangeStatus, onOpenTask };
+  const cardProps = {
+    statuses,
+    busyTaskId,
+    picked,
+    onTogglePicked,
+    onChangeStatus,
+    onOpenTask,
+    subtasks,
+    isExpanded,
+    onToggleSubtasks,
+  };
 
   return (
     <DndContext
@@ -1260,6 +1569,9 @@ type BoardCardProps = {
   onTogglePicked: (task: ClickUpTask) => void;
   onChangeStatus: (task: ClickUpTask, status: ClickUpListStatus) => void;
   onOpenTask: (task: ClickUpTask) => void;
+  subtasks: ReadonlyMap<string, ReadonlyArray<ClickUpTask>>;
+  isExpanded: (taskId: string) => boolean;
+  onToggleSubtasks: (taskId: string) => void;
 };
 
 function BoardCard(props: BoardCardProps) {
@@ -1281,10 +1593,15 @@ function BoardCardBody({
   onTogglePicked,
   onChangeStatus,
   onOpenTask,
+  subtasks,
+  isExpanded,
+  onToggleSubtasks,
   className,
 }: BoardCardProps & { className?: string }) {
   const due = formatDueDate(task.due_date);
   const priority = task.priority?.priority;
+  const children = subtasks.get(task.id) ?? [];
+  const expanded = children.length > 0 && isExpanded(task.id);
   return (
     <div
       className={cn(
@@ -1322,7 +1639,89 @@ function BoardCardBody({
           ) : null}
         </div>
       ) : null}
+      {children.length > 0 ? (
+        <div className="-mx-1 flex flex-col">
+          <button
+            type="button"
+            onClick={() => onToggleSubtasks(task.id)}
+            aria-expanded={expanded}
+            className="flex w-fit items-center gap-1 rounded-sm px-1 py-0.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
+          >
+            <ListTreeIcon className="size-3.5" />
+            {children.length} {children.length === 1 ? "subtask" : "subtasks"}
+            {expanded ? (
+              <ChevronDownIcon className="size-3" />
+            ) : (
+              <ChevronRightIcon className="size-3" />
+            )}
+          </button>
+          {expanded
+            ? children.map((child) => (
+                <div
+                  key={child.id}
+                  className="flex h-7 items-center gap-2 rounded-sm px-1 hover:bg-accent"
+                >
+                  <StatusMenu
+                    task={child}
+                    statuses={statuses}
+                    busy={busyTaskId === child.id}
+                    onChange={onChangeStatus}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => onOpenTask(child)}
+                    className="min-w-0 flex-1 truncate text-left text-xs hover:text-primary"
+                  >
+                    {child.name}
+                  </button>
+                  <Assignees task={child} />
+                </div>
+              ))
+            : null}
+        </div>
+      ) : null}
     </div>
+  );
+}
+
+function SubtaskToggle({
+  count,
+  expanded,
+  onToggle,
+}: {
+  count: number;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  if (count === 0) return <span aria-hidden className="size-4 shrink-0" />;
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      aria-expanded={expanded}
+      aria-label={expanded ? "Collapse subtasks" : "Expand subtasks"}
+      className="grid size-4 shrink-0 place-items-center rounded-sm text-muted-foreground hover:bg-accent hover:text-foreground"
+    >
+      {expanded ? (
+        <ChevronDownIcon className="size-3.5" />
+      ) : (
+        <ChevronRightIcon className="size-3.5" />
+      )}
+    </button>
+  );
+}
+
+function SubtaskCount({ count, onToggle }: { count: number; onToggle: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      aria-label={`${count} ${count === 1 ? "subtask" : "subtasks"}`}
+      className="flex shrink-0 items-center gap-0.5 rounded-sm border border-border px-1 text-2xs text-muted-foreground tabular-nums hover:bg-accent hover:text-foreground"
+    >
+      <ListTreeIcon className="size-3" />
+      {count}
+    </button>
   );
 }
 
@@ -1690,444 +2089,426 @@ function TaskDetailSheet({
     }
   };
 
+  if (!task) return null;
   return (
-    <Dialog
-      open={task !== null}
-      onOpenChange={(open) => {
-        if (open) return;
-        resetDrafts();
-        onClose();
-      }}
-    >
-      <DialogPopup className="h-[88vh] max-w-6xl" bottomStickOnMobile={false}>
-        {task ? (
-          <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl text-sm">
-            <div className="flex h-12 shrink-0 items-center gap-2 border-b border-border pr-12 pl-5 text-xs text-muted-foreground">
-              <ListIcon className="size-3.5" />
-              <span className="truncate">{loaded?.list?.name ?? "Task"}</span>
-              <ChevronRightIcon className="size-3.5 shrink-0" />
-              <span className="rounded-sm border border-border px-1.5 py-0.5 font-mono text-2xs">
-                {task.id}
-              </span>
-              <a
-                href={task.url}
-                target="_blank"
-                rel="noreferrer"
-                className="ml-auto flex items-center gap-1 hover:text-foreground"
-              >
-                Open in ClickUp
-                <ExternalLinkIcon className="size-3.5" />
-              </a>
-              <Button
-                variant="ghost-destructive"
-                size="icon-xs"
-                disabled={!editable}
-                onClick={() => void remove()}
-                aria-label="Delete task"
-              >
-                <Trash2Icon />
-              </Button>
-            </div>
-            <div className="flex min-h-0 flex-1 max-md:flex-col">
-              <div className="min-h-0 flex-1 overflow-y-auto px-10 py-6 max-md:px-5">
-                <input
-                  value={nameDraft ?? task.name}
-                  disabled={!editable}
-                  onChange={(event) => setNameDraft(event.target.value)}
-                  onBlur={() => void saveName()}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter") event.currentTarget.blur();
-                    if (event.key === "Escape") setNameDraft(null);
-                  }}
-                  aria-label="Task name"
-                  className="w-full rounded-md bg-transparent px-1 -mx-1 text-2xl leading-tight font-bold outline-none hover:bg-accent/50 focus:bg-accent/50"
-                />
-                {actionError ? <p className="mt-2 text-xs text-error">{actionError}</p> : null}
+    <div className="@container flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden text-sm">
+      <div className="flex h-12 shrink-0 items-center gap-2 border-b border-border px-3 text-xs text-muted-foreground">
+        <Button
+          variant="ghost"
+          size="icon-xs"
+          onClick={() => {
+            resetDrafts();
+            onClose();
+          }}
+          aria-label="Back to tasks"
+        >
+          <ArrowLeftIcon />
+        </Button>
+        <ListIcon className="size-3.5" />
+        <span className="truncate">{loaded?.list?.name ?? "Task"}</span>
+        <ChevronRightIcon className="size-3.5 shrink-0" />
+        <span className="rounded-sm border border-border px-1.5 py-0.5 font-mono text-2xs">
+          {task.id}
+        </span>
+        <a
+          href={task.url}
+          target="_blank"
+          rel="noreferrer"
+          className="ml-auto flex items-center gap-1 hover:text-foreground"
+        >
+          Open in ClickUp
+          <ExternalLinkIcon className="size-3.5" />
+        </a>
+        <Button
+          variant="ghost-destructive"
+          size="icon-xs"
+          disabled={!editable}
+          onClick={() => void remove()}
+          aria-label="Delete task"
+        >
+          <Trash2Icon />
+        </Button>
+      </div>
+      <div className="flex min-h-0 flex-1 @max-3xl:flex-col @max-3xl:overflow-y-auto">
+        <div className="min-h-0 flex-1 overflow-y-auto px-10 py-6 @max-3xl:flex-none @max-3xl:overflow-visible @max-3xl:px-5">
+          <input
+            value={nameDraft ?? task.name}
+            disabled={!editable}
+            onChange={(event) => setNameDraft(event.target.value)}
+            onBlur={() => void saveName()}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") event.currentTarget.blur();
+              if (event.key === "Escape") setNameDraft(null);
+            }}
+            aria-label="Task name"
+            className="w-full rounded-md bg-transparent px-1 -mx-1 text-2xl leading-tight font-bold outline-none hover:bg-accent/50 focus:bg-accent/50"
+          />
+          {actionError ? <p className="mt-2 text-xs text-error">{actionError}</p> : null}
 
-                <dl className="mt-6 grid grid-cols-[7.5rem_minmax(0,1fr)] items-center gap-x-3 gap-y-3 text-xs lg:grid-cols-[7.5rem_minmax(0,1fr)_7.5rem_minmax(0,1fr)]">
-                  <dt className={FIELD_LABEL_CLASS}>
-                    <CircleDotIcon className="size-4" />
-                    Status
-                  </dt>
-                  <dd className="flex items-center gap-2">
-                    <StatusMenu
-                      task={task}
-                      statuses={statuses}
-                      busy={busy}
-                      onChange={onChangeStatus}
-                      pill
-                    />
-                  </dd>
-                  <dt className={FIELD_LABEL_CLASS}>
-                    <UsersIcon className="size-4" />
-                    Assignees
-                  </dt>
-                  <dd>
-                    <Menu>
-                      <MenuTrigger
-                        render={
-                          <button
-                            type="button"
-                            disabled={!editable}
-                            className="flex max-w-full items-center gap-2 rounded-sm px-1 py-0.5 enabled:hover:bg-accent"
-                          />
-                        }
-                      >
-                        <Assignees task={task} />
-                        <span className="truncate">
-                          {task.assignees.map((assignee) => assignee.username).join(", ") ||
-                            "Unassigned"}
-                        </span>
-                      </MenuTrigger>
-                      <MenuPopup align="start" side="bottom">
-                        {members.length === 0 ? (
-                          <MenuItem disabled>No members found</MenuItem>
-                        ) : (
-                          members.map((member) => {
-                            const assigned = task.assignees.some((entry) => entry.id === member.id);
-                            return (
-                              <MenuCheckboxItem
-                                key={member.id}
-                                checked={assigned}
-                                onClick={() => toggleAssignee(member, assigned)}
-                              >
-                                {member.username}
-                              </MenuCheckboxItem>
-                            );
-                          })
-                        )}
-                      </MenuPopup>
-                    </Menu>
-                  </dd>
-                  <dt className={FIELD_LABEL_CLASS}>
-                    <CalendarIcon className="size-4" />
-                    Due date
-                  </dt>
-                  <dd className="flex items-center gap-1">
-                    <Input
-                      type="date"
-                      size="compact"
+          <dl className="mt-6 grid grid-cols-[7.5rem_minmax(0,1fr)] items-center gap-x-3 gap-y-3 text-xs lg:grid-cols-[7.5rem_minmax(0,1fr)_7.5rem_minmax(0,1fr)]">
+            <dt className={FIELD_LABEL_CLASS}>
+              <CircleDotIcon className="size-4" />
+              Status
+            </dt>
+            <dd className="flex items-center gap-2">
+              <StatusMenu
+                task={task}
+                statuses={statuses}
+                busy={busy}
+                onChange={onChangeStatus}
+                pill
+              />
+            </dd>
+            <dt className={FIELD_LABEL_CLASS}>
+              <UsersIcon className="size-4" />
+              Assignees
+            </dt>
+            <dd>
+              <Menu>
+                <MenuTrigger
+                  render={
+                    <button
+                      type="button"
                       disabled={!editable}
-                      value={dueDateInputValue(task.due_date)}
-                      onChange={(event) => {
-                        const value = event.target.value;
-                        void run((token, id) =>
-                          updateTask(token, id, {
-                            due_date: value ? new Date(`${value}T12:00:00`).getTime() : null,
-                            due_date_time: false,
-                          }),
-                        );
-                      }}
-                      className="w-40"
+                      className="flex max-w-full items-center gap-2 rounded-sm px-1 py-0.5 enabled:hover:bg-accent"
                     />
-                  </dd>
-                  <dt className={FIELD_LABEL_CLASS}>
-                    <FlagIcon className="size-4" />
-                    Priority
-                  </dt>
-                  <dd>
-                    <Menu>
-                      <MenuTrigger
-                        render={
-                          <button
-                            type="button"
-                            disabled={!editable}
-                            className="flex items-center gap-1 rounded-sm px-1 py-0.5 enabled:hover:bg-accent"
-                          />
-                        }
-                      >
-                        <FlagIcon
-                          className="size-3.5"
-                          style={{ color: priority ? PRIORITY_COLORS[priority] : "#87909e" }}
-                        />
-                        {priority ? (PRIORITY_LABELS[priority] ?? "Priority") : "None"}
-                      </MenuTrigger>
-                      <MenuPopup align="start" side="bottom">
-                        <MenuRadioGroup
-                          value={priority ?? ""}
-                          onValueChange={(value) =>
-                            void run((token, id) =>
-                              updateTask(token, id, { priority: value ? Number(value) : null }),
-                            )
-                          }
+                  }
+                >
+                  <Assignees task={task} />
+                  <span className="truncate">
+                    {task.assignees.map((assignee) => assignee.username).join(", ") || "Unassigned"}
+                  </span>
+                </MenuTrigger>
+                <MenuPopup align="start" side="bottom">
+                  {members.length === 0 ? (
+                    <MenuItem disabled>No members found</MenuItem>
+                  ) : (
+                    members.map((member) => {
+                      const assigned = task.assignees.some((entry) => entry.id === member.id);
+                      return (
+                        <MenuCheckboxItem
+                          key={member.id}
+                          checked={assigned}
+                          onClick={() => toggleAssignee(member, assigned)}
                         >
-                          {PRIORITY_OPTIONS.map((value) => (
-                            <MenuRadioItem key={value} value={value} closeOnClick>
-                              <FlagIcon
-                                className="size-3.5"
-                                style={{ color: PRIORITY_COLORS[value] }}
-                              />
-                              {PRIORITY_LABELS[value]}
-                            </MenuRadioItem>
-                          ))}
-                          <MenuRadioItem value="" closeOnClick>
-                            None
-                          </MenuRadioItem>
-                        </MenuRadioGroup>
-                      </MenuPopup>
-                    </Menu>
-                  </dd>
-                  <dt className={FIELD_LABEL_CLASS}>
-                    <TagIcon className="size-4" />
-                    Tags
-                  </dt>
-                  <dd className="flex flex-wrap items-center gap-1">
-                    {taskTags.map((tag) => (
-                      <span
-                        key={tag.name}
-                        className="flex items-center gap-1 rounded-full bg-accent py-0.5 pr-0.5 pl-2 font-medium"
-                        style={tag.tag_bg ? { backgroundColor: tag.tag_bg, color: tag.tag_fg } : {}}
-                      >
-                        {tag.name}
-                        <button
-                          type="button"
-                          disabled={!editable}
-                          onClick={() =>
-                            void run((token, id) => setTaskTag(token, id, tag.name, false))
-                          }
-                          aria-label={`Remove tag ${tag.name}`}
-                          className="grid size-4 place-items-center rounded-xs enabled:hover:bg-black/10"
-                        >
-                          <XIcon className="size-3" />
-                        </button>
-                      </span>
+                          {member.username}
+                        </MenuCheckboxItem>
+                      );
+                    })
+                  )}
+                </MenuPopup>
+              </Menu>
+            </dd>
+            <dt className={FIELD_LABEL_CLASS}>
+              <CalendarIcon className="size-4" />
+              Due date
+            </dt>
+            <dd className="flex items-center gap-1">
+              <Input
+                type="date"
+                size="compact"
+                disabled={!editable}
+                value={dueDateInputValue(task.due_date)}
+                onChange={(event) => {
+                  const value = event.target.value;
+                  void run((token, id) =>
+                    updateTask(token, id, {
+                      due_date: value ? new Date(`${value}T12:00:00`).getTime() : null,
+                      due_date_time: false,
+                    }),
+                  );
+                }}
+                className="w-40"
+              />
+            </dd>
+            <dt className={FIELD_LABEL_CLASS}>
+              <FlagIcon className="size-4" />
+              Priority
+            </dt>
+            <dd>
+              <Menu>
+                <MenuTrigger
+                  render={
+                    <button
+                      type="button"
+                      disabled={!editable}
+                      className="flex items-center gap-1 rounded-sm px-1 py-0.5 enabled:hover:bg-accent"
+                    />
+                  }
+                >
+                  <FlagIcon
+                    className="size-3.5"
+                    style={{ color: priority ? PRIORITY_COLORS[priority] : "#87909e" }}
+                  />
+                  {priority ? (PRIORITY_LABELS[priority] ?? "Priority") : "None"}
+                </MenuTrigger>
+                <MenuPopup align="start" side="bottom">
+                  <MenuRadioGroup
+                    value={priority ?? ""}
+                    onValueChange={(value) =>
+                      void run((token, id) =>
+                        updateTask(token, id, { priority: value ? Number(value) : null }),
+                      )
+                    }
+                  >
+                    {PRIORITY_OPTIONS.map((value) => (
+                      <MenuRadioItem key={value} value={value} closeOnClick>
+                        <FlagIcon className="size-3.5" style={{ color: PRIORITY_COLORS[value] }} />
+                        {PRIORITY_LABELS[value]}
+                      </MenuRadioItem>
                     ))}
-                    <Menu>
-                      <MenuTrigger
-                        render={
-                          <Button
-                            variant="ghost-muted"
-                            size="icon-micro"
-                            disabled={!editable}
-                            aria-label="Add tag"
-                          />
-                        }
-                      >
-                        <PlusIcon />
-                      </MenuTrigger>
-                      <MenuPopup align="start" side="bottom">
-                        {spaceTags.filter(
-                          (tag) => !taskTags.some((entry) => entry.name === tag.name),
-                        ).length === 0 ? (
-                          <MenuItem disabled>No more tags in this space</MenuItem>
-                        ) : (
-                          spaceTags
-                            .filter((tag) => !taskTags.some((entry) => entry.name === tag.name))
-                            .map((tag) => (
-                              <MenuItem
-                                key={tag.name}
-                                onClick={() =>
-                                  void run((token, id) => setTaskTag(token, id, tag.name, true))
-                                }
-                              >
-                                {tag.name}
-                              </MenuItem>
-                            ))
-                        )}
-                      </MenuPopup>
-                    </Menu>
-                  </dd>
-                </dl>
-
-                {threads.length > 0 ? (
-                  <>
-                    <SectionTitle>Threads</SectionTitle>
-                    <ul className="space-y-1">
-                      {threads.map((thread) => (
-                        <li key={`${thread.environmentId}:${thread.id}`}>
-                          <Link
-                            to="/$environmentId/$threadId"
-                            params={{ environmentId: thread.environmentId, threadId: thread.id }}
-                            onClick={onClose}
-                            className="flex items-center gap-2 rounded-sm px-1.5 py-1 hover:bg-accent"
-                          >
-                            <span
-                              className={cn(
-                                "size-1.5 shrink-0 rounded-full",
-                                threadIsRunning(thread) ? "bg-success" : "bg-muted-foreground/50",
-                              )}
-                            />
-                            <span className="min-w-0 flex-1 truncate">{thread.title}</span>
-                            <span className="text-2xs text-muted-foreground">
-                              {threadIsRunning(thread) ? "Running" : "Idle"}
-                            </span>
-                          </Link>
-                        </li>
-                      ))}
-                    </ul>
-                  </>
-                ) : null}
-
-                <div className="flex items-center">
-                  <SectionTitle>Description</SectionTitle>
-                  {descriptionDraft === null && editable ? (
+                    <MenuRadioItem value="" closeOnClick>
+                      None
+                    </MenuRadioItem>
+                  </MenuRadioGroup>
+                </MenuPopup>
+              </Menu>
+            </dd>
+            <dt className={FIELD_LABEL_CLASS}>
+              <TagIcon className="size-4" />
+              Tags
+            </dt>
+            <dd className="flex flex-wrap items-center gap-1">
+              {taskTags.map((tag) => (
+                <span
+                  key={tag.name}
+                  className="flex items-center gap-1 rounded-full bg-accent py-0.5 pr-0.5 pl-2 font-medium"
+                  style={tag.tag_bg ? { backgroundColor: tag.tag_bg, color: tag.tag_fg } : {}}
+                >
+                  {tag.name}
+                  <button
+                    type="button"
+                    disabled={!editable}
+                    onClick={() => void run((token, id) => setTaskTag(token, id, tag.name, false))}
+                    aria-label={`Remove tag ${tag.name}`}
+                    className="grid size-4 place-items-center rounded-xs enabled:hover:bg-black/10"
+                  >
+                    <XIcon className="size-3" />
+                  </button>
+                </span>
+              ))}
+              <Menu>
+                <MenuTrigger
+                  render={
                     <Button
                       variant="ghost-muted"
-                      size="micro"
-                      className="mt-6 ml-auto"
-                      onClick={() => setDescriptionDraft(description)}
-                    >
-                      <PencilIcon />
-                      Edit
-                    </Button>
-                  ) : null}
-                </div>
-                {loadError ? (
-                  <p className="text-xs text-error">{loadError}</p>
-                ) : token && !loaded ? (
-                  <p className="text-xs text-muted-foreground">Loading…</p>
-                ) : descriptionDraft !== null ? (
-                  <div className="flex flex-col gap-2">
-                    <Textarea
-                      value={descriptionDraft}
-                      onChange={(event) => setDescriptionDraft(event.target.value)}
-                      rows={10}
-                      aria-label="Description"
+                      size="icon-micro"
+                      disabled={!editable}
+                      aria-label="Add tag"
                     />
-                    <div className="flex justify-end gap-2">
-                      <Button variant="ghost" size="xs" onClick={() => setDescriptionDraft(null)}>
-                        Cancel
-                      </Button>
-                      <Button size="xs" disabled={saving} onClick={() => void saveDescription()}>
-                        Save
-                      </Button>
-                    </div>
-                  </div>
-                ) : description ? (
-                  <ChatMarkdown text={description} cwd={undefined} parseRawHtml={false} />
-                ) : (
-                  <p className="text-xs text-muted-foreground">No description.</p>
-                )}
-
-                {loaded ? (
-                  <>
-                    <SectionTitle>Subtasks</SectionTitle>
-                    <ul className="rounded-md border border-border empty:hidden">
-                      {(loaded.subtasks ?? []).map((subtask) => (
-                        <li
-                          key={subtask.id}
-                          className="flex h-9 items-center gap-2.5 border-b border-border px-3 last:border-b-0"
+                  }
+                >
+                  <PlusIcon />
+                </MenuTrigger>
+                <MenuPopup align="start" side="bottom">
+                  {spaceTags.filter((tag) => !taskTags.some((entry) => entry.name === tag.name))
+                    .length === 0 ? (
+                    <MenuItem disabled>No more tags in this space</MenuItem>
+                  ) : (
+                    spaceTags
+                      .filter((tag) => !taskTags.some((entry) => entry.name === tag.name))
+                      .map((tag) => (
+                        <MenuItem
+                          key={tag.name}
+                          onClick={() =>
+                            void run((token, id) => setTaskTag(token, id, tag.name, true))
+                          }
                         >
-                          <span
-                            className="size-3 shrink-0 rounded-full border-2"
-                            style={{
-                              borderColor: subtask.status?.color ?? STATUS_GROUP_FALLBACK_COLOR,
-                            }}
-                          />
-                          <span className="min-w-0 flex-1 truncate">{subtask.name}</span>
-                          <span className="text-2xs text-muted-foreground uppercase">
-                            {subtask.status?.status}
-                          </span>
-                        </li>
-                      ))}
-                    </ul>
-                    {editable || subtaskDraft ? (
-                      <Input
-                        size="compact"
-                        className="mt-2"
-                        placeholder="Add subtask and press Enter"
-                        value={subtaskDraft}
-                        disabled={!editable}
-                        onChange={(event) => setSubtaskDraft(event.target.value)}
-                        onKeyDown={(event) => {
-                          if (event.key === "Enter") void addSubtask();
-                        }}
-                      />
-                    ) : null}
-                  </>
-                ) : null}
+                          {tag.name}
+                        </MenuItem>
+                      ))
+                  )}
+                </MenuPopup>
+              </Menu>
+            </dd>
+          </dl>
 
-                {loaded?.checklists?.map((checklist) => (
-                  <div key={checklist.id}>
-                    <SectionTitle>{checklist.name}</SectionTitle>
-                    <ul className="space-y-1">
-                      {checklist.items.map((item) => (
-                        <li key={item.id}>
-                          <button
-                            type="button"
-                            disabled={!editable}
-                            onClick={() =>
-                              void run((token) =>
-                                setChecklistItemResolved(
-                                  token,
-                                  checklist.id,
-                                  item.id,
-                                  !item.resolved,
-                                ),
-                              )
-                            }
-                            className="flex w-full items-center gap-2 rounded-sm px-1 py-0.5 text-left enabled:hover:bg-accent"
-                          >
-                            <CheckIcon
-                              className={cn(
-                                "size-3.5 shrink-0",
-                                item.resolved ? "text-primary" : "text-muted-foreground/40",
-                              )}
-                            />
-                            <span
-                              className={cn(item.resolved && "text-muted-foreground line-through")}
-                            >
-                              {item.name}
-                            </span>
-                          </button>
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                ))}
-              </div>
-              <aside className="flex min-h-0 w-96 shrink-0 flex-col border-l border-border bg-muted/40 max-md:w-full max-md:border-t max-md:border-l-0">
-                <div className="flex h-11 shrink-0 items-center px-4 text-sm font-semibold">
-                  Activity
-                </div>
-                <ul className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 pb-3">
-                  {loaded && comments.length === 0 ? (
-                    <li className="text-xs text-muted-foreground">No comments yet.</li>
-                  ) : null}
-                  {comments.map((comment) => (
-                    <li key={comment.id} className="flex gap-2 text-xs">
-                      <span className="grid size-6 shrink-0 place-items-center rounded-full bg-primary text-4xs font-semibold text-primary-foreground">
-                        {comment.user.username.slice(0, 2).toUpperCase()}
+          {threads.length > 0 ? (
+            <>
+              <SectionTitle>Threads</SectionTitle>
+              <ul className="space-y-1">
+                {threads.map((thread) => (
+                  <li key={`${thread.environmentId}:${thread.id}`}>
+                    <Link
+                      to="/$environmentId/$threadId"
+                      params={{ environmentId: thread.environmentId, threadId: thread.id }}
+                      onClick={onClose}
+                      className="flex items-center gap-2 rounded-sm px-1.5 py-1 hover:bg-accent"
+                    >
+                      <span
+                        className={cn(
+                          "size-1.5 shrink-0 rounded-full",
+                          threadIsRunning(thread) ? "bg-success" : "bg-muted-foreground/50",
+                        )}
+                      />
+                      <span className="min-w-0 flex-1 truncate">{thread.title}</span>
+                      <span className="text-2xs text-muted-foreground">
+                        {threadIsRunning(thread) ? "Running" : "Idle"}
                       </span>
-                      <div className="min-w-0 flex-1 rounded-lg border border-border bg-card px-3 py-2">
-                        <div className="flex items-baseline gap-2">
-                          <span className="font-semibold">{comment.user.username}</span>
-                          <span className="ml-auto text-2xs text-muted-foreground">
-                            {new Date(Number(comment.date)).toLocaleString()}
-                          </span>
-                        </div>
-                        <p className="mt-1 whitespace-pre-wrap">{comment.comment_text}</p>
-                      </div>
-                    </li>
-                  ))}
-                </ul>
-                <div className="flex shrink-0 flex-col gap-2 border-t border-border p-3">
-                  <Textarea
-                    size="sm"
-                    placeholder="Write a comment…"
-                    value={commentDraft}
-                    disabled={!editable}
-                    onChange={(event) => setCommentDraft(event.target.value)}
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter" && (event.metaKey || event.ctrlKey))
-                        void addComment();
-                    }}
-                    aria-label="Comment"
-                  />
-                  <Button
-                    size="xs"
-                    className="self-end"
-                    disabled={!editable || commentDraft.trim().length === 0}
-                    onClick={() => void addComment()}
-                  >
-                    Comment
-                  </Button>
-                </div>
-              </aside>
-            </div>
+                    </Link>
+                  </li>
+                ))}
+              </ul>
+            </>
+          ) : null}
+
+          <div className="flex items-center">
+            <SectionTitle>Description</SectionTitle>
+            {descriptionDraft === null && editable ? (
+              <Button
+                variant="ghost-muted"
+                size="micro"
+                className="mt-6 ml-auto"
+                onClick={() => setDescriptionDraft(description)}
+              >
+                <PencilIcon />
+                Edit
+              </Button>
+            ) : null}
           </div>
-        ) : null}
-      </DialogPopup>
-    </Dialog>
+          {loadError ? (
+            <p className="text-xs text-error">{loadError}</p>
+          ) : token && !loaded ? (
+            <p className="text-xs text-muted-foreground">Loading…</p>
+          ) : descriptionDraft !== null ? (
+            <div className="flex flex-col gap-2">
+              <Textarea
+                value={descriptionDraft}
+                onChange={(event) => setDescriptionDraft(event.target.value)}
+                rows={10}
+                aria-label="Description"
+              />
+              <div className="flex justify-end gap-2">
+                <Button variant="ghost" size="xs" onClick={() => setDescriptionDraft(null)}>
+                  Cancel
+                </Button>
+                <Button size="xs" disabled={saving} onClick={() => void saveDescription()}>
+                  Save
+                </Button>
+              </div>
+            </div>
+          ) : description ? (
+            <ChatMarkdown text={description} cwd={undefined} parseRawHtml={false} />
+          ) : (
+            <p className="text-xs text-muted-foreground">No description.</p>
+          )}
+
+          {loaded ? (
+            <>
+              <SectionTitle>Subtasks</SectionTitle>
+              <ul className="rounded-md border border-border empty:hidden">
+                {(loaded.subtasks ?? []).map((subtask) => (
+                  <li
+                    key={subtask.id}
+                    className="flex h-9 items-center gap-2.5 border-b border-border px-3 last:border-b-0"
+                  >
+                    <span
+                      className="size-3 shrink-0 rounded-full border-2"
+                      style={{
+                        borderColor: subtask.status?.color ?? STATUS_GROUP_FALLBACK_COLOR,
+                      }}
+                    />
+                    <span className="min-w-0 flex-1 truncate">{subtask.name}</span>
+                    <span className="text-2xs text-muted-foreground uppercase">
+                      {subtask.status?.status}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+              {editable || subtaskDraft ? (
+                <Input
+                  size="compact"
+                  className="mt-2"
+                  placeholder="Add subtask and press Enter"
+                  value={subtaskDraft}
+                  disabled={!editable}
+                  onChange={(event) => setSubtaskDraft(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") void addSubtask();
+                  }}
+                />
+              ) : null}
+            </>
+          ) : null}
+
+          {loaded?.checklists?.map((checklist) => (
+            <div key={checklist.id}>
+              <SectionTitle>{checklist.name}</SectionTitle>
+              <ul className="space-y-1">
+                {checklist.items.map((item) => (
+                  <li key={item.id}>
+                    <button
+                      type="button"
+                      disabled={!editable}
+                      onClick={() =>
+                        void run((token) =>
+                          setChecklistItemResolved(token, checklist.id, item.id, !item.resolved),
+                        )
+                      }
+                      className="flex w-full items-center gap-2 rounded-sm px-1 py-0.5 text-left enabled:hover:bg-accent"
+                    >
+                      <CheckIcon
+                        className={cn(
+                          "size-3.5 shrink-0",
+                          item.resolved ? "text-primary" : "text-muted-foreground/40",
+                        )}
+                      />
+                      <span className={cn(item.resolved && "text-muted-foreground line-through")}>
+                        {item.name}
+                      </span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ))}
+        </div>
+        <aside className="flex min-h-0 w-96 shrink-0 flex-col border-l border-border bg-muted/40 @max-3xl:w-full @max-3xl:border-t @max-3xl:border-l-0">
+          <div className="flex h-11 shrink-0 items-center px-4 text-sm font-semibold">Activity</div>
+          <ul className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 pb-3">
+            {loaded && comments.length === 0 ? (
+              <li className="text-xs text-muted-foreground">No comments yet.</li>
+            ) : null}
+            {comments.map((comment) => (
+              <li key={comment.id} className="flex gap-2 text-xs">
+                <span className="grid size-6 shrink-0 place-items-center rounded-full bg-primary text-4xs font-semibold text-primary-foreground">
+                  {comment.user.username.slice(0, 2).toUpperCase()}
+                </span>
+                <div className="min-w-0 flex-1 rounded-lg border border-border bg-card px-3 py-2">
+                  <div className="flex items-baseline gap-2">
+                    <span className="font-semibold">{comment.user.username}</span>
+                    <span className="ml-auto text-2xs text-muted-foreground">
+                      {new Date(Number(comment.date)).toLocaleString()}
+                    </span>
+                  </div>
+                  <p className="mt-1 whitespace-pre-wrap">{comment.comment_text}</p>
+                </div>
+              </li>
+            ))}
+          </ul>
+          <div className="flex shrink-0 flex-col gap-2 border-t border-border p-3">
+            <Textarea
+              size="sm"
+              placeholder="Write a comment…"
+              value={commentDraft}
+              disabled={!editable}
+              onChange={(event) => setCommentDraft(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) void addComment();
+              }}
+              aria-label="Comment"
+            />
+            <Button
+              size="xs"
+              className="self-end"
+              disabled={!editable || commentDraft.trim().length === 0}
+              onClick={() => void addComment()}
+            >
+              Comment
+            </Button>
+          </div>
+        </aside>
+      </div>
+    </div>
   );
 }

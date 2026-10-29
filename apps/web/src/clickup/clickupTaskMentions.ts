@@ -1,7 +1,11 @@
+import type { OrchestrationMessageContext, ScopedThreadRef } from "@t3tools/contracts";
 import { useEffect, useState } from "react";
+import { create } from "zustand";
 
 import { useComposerDraftStore, type ComposerThreadTarget } from "../composerDraftStore";
+import { asKnownContextRecord } from "../lib/composerContextRecords";
 import type { ReviewCommentContext } from "../reviewCommentContext";
+import { useRightPanelStore } from "../rightPanelStore";
 import {
   fetchMyTasks,
   fetchTaskDetail,
@@ -47,12 +51,90 @@ export function matchClickUpTasks(
     .slice(0, RESULT_LIMIT);
 }
 
+const OPEN_TASK_STORAGE_KEY = "ldcode:clickup:open-task";
+
+/** The task whose detail sheet the ClickUp page shows; chips set it from outside the page. */
+export const useClickUpOpenTaskStore = create<{ readonly taskId: string | null }>(() => ({
+  taskId: typeof window === "undefined" ? null : window.localStorage.getItem(OPEN_TASK_STORAGE_KEY),
+}));
+
+export function setClickUpOpenTask(taskId: string | null): void {
+  if (taskId === null) window.localStorage.removeItem(OPEN_TASK_STORAGE_KEY);
+  else window.localStorage.setItem(OPEN_TASK_STORAGE_KEY, taskId);
+  useClickUpOpenTaskStore.setState({ taskId });
+}
+
+const SECTION_PREFIX = "clickup:";
+
+/** The ClickUp task id behind a mention chip, or null for any other review comment. */
+export function clickUpTaskIdFromSection(sectionId: string): string | null {
+  return sectionId.startsWith(SECTION_PREFIX) ? sectionId.slice(SECTION_PREFIX.length) : null;
+}
+
+export type MentionedClickUpTask = {
+  readonly id: string;
+  readonly name: string;
+  /** Status when it was mentioned; the live one comes from the ClickUp API. */
+  readonly status: string | null;
+};
+
+/** ClickUp tasks mentioned anywhere in a thread, first mention first. */
+export function mentionedClickUpTasks(
+  messages: ReadonlyArray<{ readonly context?: OrchestrationMessageContext | undefined }>,
+): ReadonlyArray<MentionedClickUpTask> {
+  const tasks = new Map<string, MentionedClickUpTask>();
+  for (const message of messages) {
+    for (const entry of message.context?.records ?? []) {
+      const record = asKnownContextRecord(entry);
+      if (record?.kind !== "review-comment") continue;
+      const id = clickUpTaskIdFromSection(record.sectionId);
+      if (id === null || tasks.has(id)) continue;
+      const status = /^Status: (.+)$/m.exec(record.text)?.[1] ?? null;
+      tasks.set(id, { id, name: record.rangeLabel, status });
+    }
+  }
+  return [...tasks.values()];
+}
+
+/** Live status per task id; empty without a ClickUp token. */
+export function useClickUpTaskStatuses(
+  taskIds: ReadonlyArray<string>,
+): ReadonlyMap<string, ClickUpTask["status"]> {
+  const [statuses, setStatuses] = useState<ReadonlyMap<string, ClickUpTask["status"]>>(new Map());
+  const key = taskIds.join(",");
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- reads task statuses from the ClickUp API, outside React.
+  useEffect(() => {
+    const token = readClickUpToken();
+    if (token === null || key === "") return;
+    let cancelled = false;
+    void Promise.allSettled(key.split(",").map((id) => fetchTaskDetail(token, id))).then(
+      (results) => {
+        if (cancelled) return;
+        const next = new Map<string, ClickUpTask["status"]>();
+        for (const result of results) {
+          if (result.status === "fulfilled") next.set(result.value.id, result.value.status);
+        }
+        setStatuses(next);
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [key]);
+  return statuses;
+}
+
+export function openClickUpTaskInRightPanel(threadRef: ScopedThreadRef, taskId: string): void {
+  setClickUpOpenTask(taskId);
+  useRightPanelStore.getState().open(threadRef, "clickup");
+}
+
 const MAX_DESCRIPTION = 8_000;
 
 function contextFromLines(task: ClickUpTask, lines: ReadonlyArray<string>): ReviewCommentContext {
   return {
     id: `clickup-task:${task.id}`,
-    sectionId: `clickup:${task.id}`,
+    sectionId: `${SECTION_PREFIX}${task.id}`,
     sectionTitle: "ClickUp",
     filePath: "ClickUp",
     startIndex: 0,

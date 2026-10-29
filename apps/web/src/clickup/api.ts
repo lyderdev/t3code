@@ -37,6 +37,8 @@ export type ClickUpTask = {
     readonly initials: string;
     readonly color: string;
   }>;
+  readonly tags?: ReadonlyArray<ClickUpTag>;
+  readonly parent?: string | null;
 };
 
 export type ClickUpIdentity = {
@@ -275,6 +277,7 @@ const DEMO_TASKS: ReadonlyArray<ClickUpTask> = [
     priority: { priority: "1" },
     due_date: String(Date.now() + 86_400_000),
     assignees: [{ id: 1, username: "Loi Do", initials: "LD", color: "#7b68ee" }],
+    tags: [{ name: "ship", tag_bg: "#7b68ee" }],
   },
   {
     id: "demo-2",
@@ -302,6 +305,7 @@ const DEMO_TASKS: ReadonlyArray<ClickUpTask> = [
     priority: { priority: "3" },
     due_date: String(Date.now() + 2 * 86_400_000),
     assignees: [{ id: 2, username: "Agent", initials: "AG", color: "#ff9d42" }],
+    tags: [{ name: "ui", tag_bg: "#0ab1e6" }],
   },
   {
     id: "demo-5",
@@ -311,6 +315,36 @@ const DEMO_TASKS: ReadonlyArray<ClickUpTask> = [
     priority: { priority: "4" },
     due_date: null,
     assignees: [],
+  },
+  {
+    id: "demo-6",
+    name: "Map ClickUp statuses",
+    url: "https://app.clickup.com",
+    status: { status: "complete", color: "#008844" },
+    priority: null,
+    due_date: null,
+    assignees: [{ id: 1, username: "Loi Do", initials: "LD", color: "#7b68ee" }],
+    parent: "demo-1",
+  },
+  {
+    id: "demo-7",
+    name: "Attach tasks to threads",
+    url: "https://app.clickup.com",
+    status: { status: "in progress", color: "#4466ff" },
+    priority: { priority: "2" },
+    due_date: null,
+    assignees: [{ id: 2, username: "Agent", initials: "AG", color: "#ff9d42" }],
+    parent: "demo-1",
+  },
+  {
+    id: "demo-8",
+    name: "Board drag and drop",
+    url: "https://app.clickup.com",
+    status: { status: "to do", color: "#87909e" },
+    priority: null,
+    due_date: null,
+    assignees: [],
+    parent: "demo-4",
   },
 ];
 
