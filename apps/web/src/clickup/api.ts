@@ -45,7 +45,7 @@ export type ClickUpIdentity = {
   readonly email: string;
 };
 
-export class ClickUpApiError extends Error {
+class ClickUpApiError extends Error {
   constructor(
     readonly status: number,
     message: string,
@@ -55,14 +55,54 @@ export class ClickUpApiError extends Error {
   }
 }
 
-export function readClickUpToken(): string | null {
-  if (typeof window === "undefined") return null;
-  const token = window.localStorage.getItem(TOKEN_STORAGE_KEY)?.trim();
-  return token && token.length > 0 ? token : null;
+export type ClickUpAccount = {
+  readonly token: string;
+  readonly email: string;
+  readonly workspaceId?: string;
+  /** What the token reaches, so tokens for one email stay distinguishable. */
+  readonly workspaceLabel?: string;
+};
+
+const ACCOUNTS_STORAGE_KEY = "ldcode:clickup:accounts";
+
+/** Saved accounts, active one first. */
+export function readClickUpAccounts(): ReadonlyArray<ClickUpAccount> {
+  if (typeof window === "undefined") return [];
+  const stored = window.localStorage.getItem(ACCOUNTS_STORAGE_KEY);
+  try {
+    const parsed: unknown = stored === null ? null : JSON.parse(stored);
+    if (Array.isArray(parsed)) {
+      return parsed.filter(
+        (entry): entry is ClickUpAccount =>
+          typeof entry?.token === "string" && typeof entry?.email === "string",
+      );
+    }
+  } catch {}
+  // Single-token storage from before multiple accounts; its email fills in on next connect.
+  const legacy = window.localStorage.getItem(TOKEN_STORAGE_KEY)?.trim();
+  return legacy ? [{ token: legacy, email: "" }] : [];
 }
 
-export function saveClickUpToken(token: string): void {
-  window.localStorage.setItem(TOKEN_STORAGE_KEY, token.trim());
+function writeClickUpAccounts(accounts: ReadonlyArray<ClickUpAccount>): void {
+  window.localStorage.setItem(ACCOUNTS_STORAGE_KEY, JSON.stringify(accounts));
+  window.localStorage.removeItem(TOKEN_STORAGE_KEY);
+}
+
+export function readClickUpToken(): string | null {
+  return readClickUpAccounts()[0]?.token ?? null;
+}
+
+/** Adds or updates the account and makes it the active one. */
+export function saveClickUpAccount(account: ClickUpAccount): void {
+  writeClickUpAccounts([
+    account,
+    ...readClickUpAccounts().filter((entry) => entry.token !== account.token),
+  ]);
+}
+
+export function removeClickUpAccount(token: string): void {
+  writeClickUpAccounts(readClickUpAccounts().filter((entry) => entry.token !== token));
+  invalidateClickUpCache(`${token}\n`);
 }
 
 const LAST_LIST_STORAGE_KEY = "ldcode:clickup:last-list";
@@ -77,11 +117,6 @@ export function readLastClickUpList(): { spaceId: string; listId: string } | nul
 
 export function saveLastClickUpList(list: ClickUpList): void {
   window.sessionStorage.setItem(LAST_LIST_STORAGE_KEY, `${list.spaceId}\n${list.id}`);
-}
-
-export function clearClickUpToken(): void {
-  window.localStorage.removeItem(TOKEN_STORAGE_KEY);
-  invalidateClickUpCache();
 }
 
 const CACHE_MS = 5 * 60_000;
@@ -222,8 +257,12 @@ export async function createTask(
   token: string,
   listId: string,
   name: string,
+  status?: string,
 ): Promise<ClickUpTask> {
-  return clickup<ClickUpTask>(token, `/list/${listId}/task`, { method: "POST", body: { name } });
+  return clickup<ClickUpTask>(token, `/list/${listId}/task`, {
+    method: "POST",
+    body: { name, status },
+  });
 }
 
 const DEMO_TASKS: ReadonlyArray<ClickUpTask> = [

@@ -75,7 +75,7 @@ export function buildClickUpTaskContext(task: ClickUpTask): ReviewCommentContext
   ]);
 }
 
-export function buildClickUpTaskDetailContext(task: ClickUpTaskDetail): ReviewCommentContext {
+function buildClickUpTaskDetailContext(task: ClickUpTaskDetail): ReviewCommentContext {
   const description = (task.markdown_description ?? task.description ?? "").trim();
   const due = task.due_date ? new Date(Number(task.due_date)).toISOString().slice(0, 10) : null;
   const subtasks = task.subtasks ?? [];
@@ -118,7 +118,7 @@ export function buildClickUpTaskDetailContext(task: ClickUpTaskDetail): ReviewCo
 }
 
 /** Full ticket from the ClickUp API; falls back to the summary without a token or on failure. */
-export async function loadClickUpTaskContext(task: ClickUpTask): Promise<ReviewCommentContext> {
+async function loadClickUpTaskContext(task: ClickUpTask): Promise<ReviewCommentContext> {
   const token = readClickUpToken();
   if (token === null) return buildClickUpTaskContext(task);
   return fetchTaskDetail(token, task.id).then(buildClickUpTaskDetailContext, () =>

@@ -220,25 +220,6 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
       transparent calc(var(--chat-composer-attachment-overlap) + 10px)
     );
   --color-zinc-25: oklch(99.2% 0 0);
-  /* ClickUp surfaces: the ClickUp workspace view reproduces ClickUp's own
-     palette instead of the app theme, so its colors are declared here rather
-     than borrowing app tokens. */
-  --color-clickup-sidebar: #1e1f25;
-  --color-clickup-sidebar-hover: #2a2c35;
-  --color-clickup-sidebar-text: #b9bdc7;
-  --color-clickup-accent: #7b68ee;
-  --color-clickup-accent-hover: #6c5ce7;
-  --color-clickup-text: #292d34;
-  --color-clickup-label: #4b5058;
-  --color-clickup-muted: #7c828d;
-  --color-clickup-faint: #9aa0a8;
-  --color-clickup-border: #e8e9eb;
-  --color-clickup-row-border: #f2f3f5;
-  --color-clickup-row-hover: #f7f8f9;
-  --color-clickup-icon-hover: #f2f3f5;
-  --color-clickup-input-border: #e0e2e6;
-  --color-clickup-checkbox: #d5d8dd;
-  --color-clickup-surface: #fafbfc;
   --animate-skeleton: skeleton 2.4s infinite;
   /* Duty-cycled indicator animations: long holds with stepped ramps, so the
      compositor updates discrete frames instead of every vsync. */
