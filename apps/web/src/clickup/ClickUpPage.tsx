@@ -8,8 +8,13 @@ import {
   useSensor,
   useSensors,
 } from "@dnd-kit/core";
-import { scopeProjectRef, scopeThreadRef } from "@t3tools/client-runtime/environment";
+import {
+  scopedThreadKey,
+  scopeProjectRef,
+  scopeThreadRef,
+} from "@t3tools/client-runtime/environment";
 import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
+import type { ScopedThreadRef } from "@t3tools/contracts";
 import {
   threadRuntimeIsActive,
   type EnvironmentThreadShell,
@@ -50,6 +55,7 @@ import {
 
 import { useComposerDraftStore, type ComposerThreadTarget } from "~/composerDraftStore";
 import { requestConfirmDialog } from "~/confirmDialog";
+import { useRightPanelStore } from "~/rightPanelStore";
 import { useNewThreadHandler } from "~/hooks/useHandleNewThread";
 import { observeResize } from "~/lib/observeResize";
 import { cn } from "~/lib/utils";
@@ -128,11 +134,7 @@ import {
   useClickUpOpenTaskId,
 } from "./clickupTaskMentions";
 import { CLICKUP_TASK_DRAG_TYPE, encodeClickUpTaskDragPayload } from "./clickupTaskDrag";
-import {
-  linkTasksToThread,
-  readTaskThreads,
-  type ClickUpTaskThreadRef,
-} from "./clickupTaskThreads";
+import { linkTasksToThread, readTaskThreads } from "./clickupTaskThreads";
 import {
   activeFilterCount,
   DUE_FILTER_OPTIONS,
@@ -597,8 +599,17 @@ export function ClickUpPage({ scope = null }: { readonly scope?: string | null }
     return tasks;
   };
 
-  const linkPickedTasks = (tasks: ReadonlyArray<ClickUpTask>, ref: ClickUpTaskThreadRef) => {
+  const linkPickedTasks = (tasks: ReadonlyArray<ClickUpTask>, ref: ScopedThreadRef) => {
     setTaskThreads(linkTasksToThread(tasks, ref));
+    // The thread's ClickUp tab starts on this page's list and the picked ticket.
+    const panelScope = scopedThreadKey(ref);
+    const panelStorageKey = clickUpPanelStorageKey(panelScope);
+    if (window.localStorage.getItem(panelStorageKey) === null) {
+      window.localStorage.setItem(panelStorageKey, JSON.stringify(ui));
+    }
+    const [onlyTask] = tasks;
+    if (tasks.length === 1 && onlyTask) setClickUpOpenTask(onlyTask.id, panelScope);
+    useRightPanelStore.getState().open(ref, "clickup");
   };
 
   const startThread = async (project: EnvironmentProject) => {
@@ -609,7 +620,7 @@ export function ClickUpPage({ scope = null }: { readonly scope?: string | null }
       toastManager.add({ type: "error", title: "Could not open a thread" });
       return;
     }
-    const ref = { environmentId: project.environmentId, threadId: opened.threadId };
+    const ref = scopeThreadRef(project.environmentId, opened.threadId);
     linkPickedTasks(writePickedTasksToComposer(opened.draftId, scope), ref);
   };
 
