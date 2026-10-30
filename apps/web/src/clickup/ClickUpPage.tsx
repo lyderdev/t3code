@@ -2181,7 +2181,8 @@ function TaskDetailSheet({
   };
 
   const saveName = async () => {
-    const name = nameDraft?.trim();
+    // The title field wraps, but a ticket name is still one line, so pasted line breaks collapse.
+    const name = nameDraft?.replace(/\s+/gu, " ").trim();
     setNameDraft(null);
     if (!name || name === task?.name) return;
     await run((token, id) => updateTask(token, id, { name }));
@@ -2277,17 +2278,21 @@ function TaskDetailSheet({
       </div>
       <div className="flex min-h-0 flex-1 @max-3xl:flex-col @max-3xl:overflow-y-auto">
         <div className="min-h-0 flex-1 overflow-y-auto px-10 py-6 @max-3xl:flex-none @max-3xl:overflow-visible @max-3xl:px-5">
-          <input
+          <textarea
             value={nameDraft ?? task.name}
             disabled={!editable}
+            rows={1}
             onChange={(event) => setNameDraft(event.target.value)}
             onBlur={() => void saveName()}
             onKeyDown={(event) => {
-              if (event.key === "Enter") event.currentTarget.blur();
+              if (event.key === "Enter") {
+                event.preventDefault();
+                event.currentTarget.blur();
+              }
               if (event.key === "Escape") setNameDraft(null);
             }}
             aria-label="Task name"
-            className="w-full rounded-md bg-transparent px-1 -mx-1 text-2xl leading-tight font-bold outline-none hover:bg-accent/50 focus:bg-accent/50"
+            className="block w-full resize-none rounded-md bg-transparent px-1 -mx-1 text-2xl leading-tight font-bold outline-none wrap-anywhere field-sizing-content hover:bg-accent/50 focus:bg-accent/50"
           />
           {actionError ? <p className="mt-2 text-xs text-error">{actionError}</p> : null}
 
