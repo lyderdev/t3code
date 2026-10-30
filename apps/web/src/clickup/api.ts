@@ -107,18 +107,6 @@ export function removeClickUpAccount(token: string): void {
   invalidateClickUpCache(`${token}\n`);
 }
 
-const LAST_LIST_STORAGE_KEY = "ldcode:clickup:last-list";
-
-export function readLastClickUpList(): { spaceId: string; listId: string } | null {
-  if (typeof window === "undefined") return null;
-  const [spaceId, listId] = (window.localStorage.getItem(LAST_LIST_STORAGE_KEY) ?? "").split("\n");
-  return spaceId && listId ? { spaceId, listId } : null;
-}
-
-export function saveLastClickUpList(list: ClickUpList): void {
-  window.localStorage.setItem(LAST_LIST_STORAGE_KEY, `${list.spaceId}\n${list.id}`);
-}
-
 const CACHE_MS = 5 * 60_000;
 const readCache = new Map<string, { readonly at: number; readonly response: Promise<unknown> }>();
 

@@ -100,10 +100,8 @@ import {
   fetchWorkspaces,
   invalidateClickUpCache,
   readClickUpAccounts,
-  readLastClickUpList,
   removeClickUpAccount,
   saveClickUpAccount,
-  saveLastClickUpList,
   setChecklistItemResolved,
   setTaskTag,
   updateTask,
@@ -124,7 +122,7 @@ import {
   buildClickUpTaskContext,
   fillClickUpTaskChip,
   setClickUpOpenTask,
-  useClickUpOpenTaskStore,
+  useClickUpOpenTaskId,
 } from "./clickupTaskMentions";
 import {
   activeFilterCount,
@@ -192,12 +190,26 @@ type PageUiState = {
   readonly view: View;
   readonly sidebarOpen: boolean;
   readonly subtasks: SubtaskMode;
+  /** Selected workspace and list; each panel keeps its own so threads on different workspaces stay apart. */
+  readonly workspaceId: string | null;
+  readonly spaceId: string | null;
+  readonly listId: string | null;
 };
 const UI_STORAGE_KEY = "ldcode:clickup:ui";
 const NARROW_PAGE_WIDTH = 1024;
 
+const storedId = (value: unknown): string | null =>
+  typeof value === "string" && value.length > 0 ? value : null;
+
 function readPageUiState(storageKey: string): PageUiState {
-  const fallback: PageUiState = { view: "list", sidebarOpen: true, subtasks: "collapsed" };
+  const fallback: PageUiState = {
+    view: "list",
+    sidebarOpen: true,
+    subtasks: "collapsed",
+    workspaceId: null,
+    spaceId: null,
+    listId: null,
+  };
   try {
     const parsed = JSON.parse(window.localStorage.getItem(storageKey) ?? "{}") as Partial<
       Record<keyof PageUiState, unknown>
@@ -209,6 +221,9 @@ function readPageUiState(storageKey: string): PageUiState {
         parsed.subtasks === "expanded" || parsed.subtasks === "separate"
           ? parsed.subtasks
           : "collapsed",
+      workspaceId: storedId(parsed.workspaceId),
+      spaceId: storedId(parsed.spaceId),
+      listId: storedId(parsed.listId),
     };
   } catch {
     return fallback;
@@ -234,10 +249,10 @@ function threadIsRunning(thread: EnvironmentThreadShell): boolean {
   return threadRuntimeIsActive(thread.runtime);
 }
 
-export function ClickUpPage({ storageKey = UI_STORAGE_KEY }: { readonly storageKey?: string }) {
+export function ClickUpPage({ scope = null }: { readonly scope?: string | null }) {
+  const storageKey = scope === null ? UI_STORAGE_KEY : `${UI_STORAGE_KEY}:panel:${scope}`;
   const [accounts, setAccounts] = useState(readClickUpAccounts);
   const token = accounts[0]?.token ?? null;
-  const workspaceId = accounts[0]?.workspaceId;
   const [mode, setMode] = useState<Mode>(() => (token ? "live" : "gate"));
   const [identity, setIdentity] = useState<ClickUpIdentity | null>(null);
   const [workspace, setWorkspace] = useState<ClickUpWorkspace | null>(null);
@@ -261,6 +276,7 @@ export function ClickUpPage({ storageKey = UI_STORAGE_KEY }: { readonly storageK
     setUi(next);
   };
   const { view, sidebarOpen } = ui;
+  const workspaceId = ui.workspaceId ?? accounts[0]?.workspaceId;
   const setView = (next: View) => updateUi({ view: next });
   // Below this the spaces sidebar costs more than it gives: a small window or the
   // thread's right panel, where the page is narrow but the viewport is not.
@@ -283,8 +299,8 @@ export function ClickUpPage({ storageKey = UI_STORAGE_KEY }: { readonly storageK
     if (compactLayout) setCompactSpacesOpen((open) => !open);
     else updateUi({ sidebarOpen: !sidebarOpen });
   };
-  const openTaskId = useClickUpOpenTaskStore((state) => state.taskId);
-  const setOpenTaskId = setClickUpOpenTask;
+  const openTaskId = useClickUpOpenTaskId(scope);
+  const setOpenTaskId = (taskId: string | null) => setClickUpOpenTask(taskId, scope);
   const [unlistedTask, setUnlistedTask] = useState<ClickUpTask | null>(null);
   const [query, setQuery] = useState("");
   const [filters, setFilters] = useState<TaskFilters>(EMPTY_TASK_FILTERS);
@@ -308,9 +324,8 @@ export function ClickUpPage({ storageKey = UI_STORAGE_KEY }: { readonly storageK
         if (!target) throw new Error("This ClickUp account has no workspace.");
         const spaceList = await fetchSpaces(token, target.id);
         if (cancelled) return;
-        const lastList = readLastClickUpList();
-        const firstSpace =
-          spaceList.find((space) => space.id === lastList?.spaceId) ?? spaceList[0];
+        const storedUi = readPageUiState(storageKey);
+        const firstSpace = spaceList.find((space) => space.id === storedUi.spaceId) ?? spaceList[0];
         const spaceLists = firstSpace ? await fetchLists(token, firstSpace.id) : [];
         if (cancelled) return;
 
@@ -328,7 +343,7 @@ export function ClickUpPage({ storageKey = UI_STORAGE_KEY }: { readonly storageK
           setLists({ [firstSpace.id]: spaceLists });
           setOpenSpaceIds([firstSpace.id]);
         }
-        const firstList = spaceLists.find((list) => list.id === lastList?.listId) ?? spaceLists[0];
+        const firstList = spaceLists.find((list) => list.id === storedUi.listId) ?? spaceLists[0];
         if (firstList) {
           const [listTasks, listStatuses] = await Promise.all([
             fetchTasks(token, firstList.id),
@@ -349,7 +364,7 @@ export function ClickUpPage({ storageKey = UI_STORAGE_KEY }: { readonly storageK
     return () => {
       cancelled = true;
     };
-  }, [token, workspaceId]);
+  }, [token, workspaceId, storageKey]);
 
   const connect = async () => {
     // Pasted tokens can carry invisible characters that fetch rejects in a header.
@@ -368,8 +383,12 @@ export function ClickUpPage({ storageKey = UI_STORAGE_KEY }: { readonly storageK
     try {
       const user = await fetchIdentity(next);
       saveClickUpAccount({ token: next, email: user.email });
-      if (next === token) setConnecting(false);
-      else resetWorkspace();
+      if (next === token) {
+        setConnecting(false);
+      } else {
+        resetWorkspace();
+        updateUi({ workspaceId: null, spaceId: null, listId: null });
+      }
       setAccounts(readClickUpAccounts());
       setMode("live");
       setTokenDraft("");
@@ -411,18 +430,17 @@ export function ClickUpPage({ storageKey = UI_STORAGE_KEY }: { readonly storageK
     if (account.token === token) return;
     saveClickUpAccount(account);
     resetWorkspace();
+    updateUi({ workspaceId: null, spaceId: null, listId: null });
     setWorkspaces([]);
     setConnecting(true);
     setAccounts(readClickUpAccounts());
   };
 
   const switchWorkspace = (next: ClickUpWorkspace) => {
-    const account = accounts[0];
-    if (!account || next.id === workspace?.id) return;
-    saveClickUpAccount({ ...account, workspaceId: next.id });
+    if (next.id === workspace?.id) return;
+    updateUi({ workspaceId: next.id, spaceId: null, listId: null });
     resetWorkspace();
     setConnecting(true);
-    setAccounts(readClickUpAccounts());
   };
 
   const disconnect = () => {
@@ -453,7 +471,7 @@ export function ClickUpPage({ storageKey = UI_STORAGE_KEY }: { readonly storageK
     setSelectedList(list);
     setFilters(EMPTY_TASK_FILTERS);
     setCompactSpacesOpen(false);
-    saveLastClickUpList(list);
+    updateUi({ spaceId: list.spaceId, listId: list.id });
     if (mode !== "live" || !token) {
       setStatuses(DEMO_STATUSES);
       setTasks(demoTasks(list.id));

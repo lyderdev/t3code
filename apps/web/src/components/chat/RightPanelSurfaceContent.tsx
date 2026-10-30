@@ -171,7 +171,7 @@ export function RightPanelSurfaceContent(props: {
     case "clickup":
       return (
         <Suspense fallback={null}>
-          <ClickUpPage storageKey="ldcode:clickup:ui:panel" />
+          <ClickUpPage key={scopedThreadKey(threadRef)} scope={scopedThreadKey(threadRef)} />
         </Suspense>
       );
     case "device":

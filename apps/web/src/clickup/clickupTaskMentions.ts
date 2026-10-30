@@ -1,4 +1,5 @@
 import type { OrchestrationMessageContext, ScopedThreadRef } from "@t3tools/contracts";
+import { scopedThreadKey } from "@t3tools/client-runtime/environment";
 import { useEffect, useState } from "react";
 import { create } from "zustand";
 
@@ -53,15 +54,31 @@ export function matchClickUpTasks(
 
 const OPEN_TASK_STORAGE_KEY = "ldcode:clickup:open-task";
 
-/** The task whose detail sheet the ClickUp page shows; chips set it from outside the page. */
-export const useClickUpOpenTaskStore = create<{ readonly taskId: string | null }>(() => ({
-  taskId: typeof window === "undefined" ? null : window.localStorage.getItem(OPEN_TASK_STORAGE_KEY),
+function readOpenTasks(): Record<string, string> {
+  try {
+    const parsed: unknown = JSON.parse(window.localStorage.getItem(OPEN_TASK_STORAGE_KEY) ?? "{}");
+    return parsed && typeof parsed === "object" ? (parsed as Record<string, string>) : {};
+  } catch {
+    return {};
+  }
+}
+
+/** The task whose detail sheet each ClickUp page shows; chips set it from outside the page. */
+export const useClickUpOpenTaskStore = create<{
+  readonly byScope: Record<string, string>;
+}>(() => ({
+  byScope: typeof window === "undefined" ? {} : readOpenTasks(),
 }));
 
-export function setClickUpOpenTask(taskId: string | null): void {
-  if (taskId === null) window.localStorage.removeItem(OPEN_TASK_STORAGE_KEY);
-  else window.localStorage.setItem(OPEN_TASK_STORAGE_KEY, taskId);
-  useClickUpOpenTaskStore.setState({ taskId });
+export function useClickUpOpenTaskId(scope: string | null): string | null {
+  return useClickUpOpenTaskStore((state) => state.byScope[scope ?? ""] ?? null);
+}
+
+export function setClickUpOpenTask(taskId: string | null, scope: string | null = null): void {
+  const { [scope ?? ""]: _previous, ...rest } = useClickUpOpenTaskStore.getState().byScope;
+  const byScope = taskId === null ? rest : { ...rest, [scope ?? ""]: taskId };
+  window.localStorage.setItem(OPEN_TASK_STORAGE_KEY, JSON.stringify(byScope));
+  useClickUpOpenTaskStore.setState({ byScope });
 }
 
 const SECTION_PREFIX = "clickup:";
@@ -125,7 +142,7 @@ export function useClickUpTaskStatuses(
 }
 
 export function openClickUpTaskInRightPanel(threadRef: ScopedThreadRef, taskId: string): void {
-  setClickUpOpenTask(taskId);
+  setClickUpOpenTask(taskId, scopedThreadKey(threadRef));
   useRightPanelStore.getState().open(threadRef, "clickup");
 }
 
