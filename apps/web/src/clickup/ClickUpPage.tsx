@@ -38,12 +38,20 @@ import {
   UsersIcon,
   XIcon,
 } from "lucide-react";
-import { Fragment, useEffect, useRef, useState, type ElementType, type ReactNode } from "react";
+import {
+  Fragment,
+  useLayoutEffect,
+  useEffect,
+  useRef,
+  useState,
+  type ElementType,
+  type ReactNode,
+} from "react";
 
 import { useComposerDraftStore } from "~/composerDraftStore";
 import { requestConfirmDialog } from "~/confirmDialog";
 import { useNewThreadHandler } from "~/hooks/useHandleNewThread";
-import { useMediaQuery } from "~/hooks/useMediaQuery";
+import { observeResize } from "~/lib/observeResize";
 import { cn } from "~/lib/utils";
 import { useProjects, useThreadShells } from "~/state/entities";
 import { sortScopedProjectsForSidebar } from "~/components/Sidebar.logic";
@@ -186,11 +194,12 @@ type PageUiState = {
   readonly subtasks: SubtaskMode;
 };
 const UI_STORAGE_KEY = "ldcode:clickup:ui";
+const NARROW_PAGE_WIDTH = 1024;
 
-function readPageUiState(): PageUiState {
+function readPageUiState(storageKey: string): PageUiState {
   const fallback: PageUiState = { view: "list", sidebarOpen: true, subtasks: "collapsed" };
   try {
-    const parsed = JSON.parse(window.localStorage.getItem(UI_STORAGE_KEY) ?? "{}") as Partial<
+    const parsed = JSON.parse(window.localStorage.getItem(storageKey) ?? "{}") as Partial<
       Record<keyof PageUiState, unknown>
     >;
     return {
@@ -225,7 +234,7 @@ function threadIsRunning(thread: EnvironmentThreadShell): boolean {
   return threadRuntimeIsActive(thread.runtime);
 }
 
-export function ClickUpPage() {
+export function ClickUpPage({ storageKey = UI_STORAGE_KEY }: { readonly storageKey?: string }) {
   const [accounts, setAccounts] = useState(readClickUpAccounts);
   const token = accounts[0]?.token ?? null;
   const workspaceId = accounts[0]?.workspaceId;
@@ -245,16 +254,29 @@ export function ClickUpPage() {
   const [loadingTasks, setLoadingTasks] = useState(false);
   const [busyTaskId, setBusyTaskId] = useState<string | null>(null);
   const [newTask, setNewTask] = useState<NewTaskDraft | null>(null);
-  const [ui, setUi] = useState(readPageUiState);
+  const [ui, setUi] = useState(() => readPageUiState(storageKey));
   const updateUi = (patch: Partial<PageUiState>) => {
     const next = { ...ui, ...patch };
-    window.localStorage.setItem(UI_STORAGE_KEY, JSON.stringify(next));
+    window.localStorage.setItem(storageKey, JSON.stringify(next));
     setUi(next);
   };
   const { view, sidebarOpen } = ui;
   const setView = (next: View) => updateUi({ view: next });
-  // Below lg the spaces sidebar is a drawer that starts closed, so content keeps the screen.
-  const compactLayout = useMediaQuery("max-lg");
+  // Below this the spaces sidebar costs more than it gives: a small window or the
+  // thread's right panel, where the page is narrow but the viewport is not.
+  const [pageIsNarrow, setPageIsNarrow] = useState(false);
+  const pageRef = useRef<HTMLDivElement>(null);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- the drawer follows the page's own width, which only a ResizeObserver reports
+  useLayoutEffect(() => {
+    const element = pageRef.current;
+    if (element === null) return;
+    const measure = (width: number) => setPageIsNarrow(width < NARROW_PAGE_WIDTH);
+    measure(element.clientWidth);
+    return observeResize(element, ([entry]) => {
+      if (entry) measure(entry.contentRect.width);
+    });
+  }, []);
+  const compactLayout = pageIsNarrow;
   const [compactSpacesOpen, setCompactSpacesOpen] = useState(false);
   const spacesOpen = compactLayout ? compactSpacesOpen : sidebarOpen;
   const toggleSpaces = () => {
@@ -608,7 +630,10 @@ export function ClickUpPage() {
     "ClickUp";
 
   return (
-    <div className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden bg-background text-sm text-foreground">
+    <div
+      ref={pageRef}
+      className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden bg-background text-sm text-foreground"
+    >
       {compactLayout && spacesOpen ? (
         <button
           type="button"
@@ -1625,10 +1650,11 @@ function BoardCardBody({
   const priority = task.priority?.priority;
   const children = subtasks.get(task.id) ?? [];
   const expanded = children.length > 0 && isExpanded(task.id);
+  const metaLineEmpty = !due && !priority && task.assignees.length === 0 && !threads?.length;
   return (
     <div
       className={cn(
-        "group flex flex-col gap-2 rounded-md border border-border bg-card p-2.5 shadow-xs hover:border-input",
+        "@container/card group flex flex-col gap-2 rounded-md border border-border bg-card p-2.5 shadow-xs hover:border-input",
         className,
       )}
     >
@@ -1648,20 +1674,20 @@ function BoardCardBody({
         </button>
         <PickBox task={task} picked={picked} onToggle={onTogglePicked} />
       </div>
-      <TaskThreadsBadge threads={threads} />
-      {due || priority || task.assignees.length > 0 ? (
-        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+      {metaLineEmpty ? null : (
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground @max-[13rem]/card:flex-col @max-[13rem]/card:items-start">
           <Assignees task={task} />
           {due ? <span className={cn(isOverdue(task.due_date) && "text-error")}>{due}</span> : null}
+          <TaskThreadsBadge threads={threads} />
           {priority ? (
             <FlagIcon
               aria-label={PRIORITY_LABELS[priority] ?? "Priority"}
-              className="ml-auto size-3.5"
+              className="ml-auto size-3.5 @max-[13rem]/card:ml-0"
               style={{ color: PRIORITY_COLORS[priority] ?? "#87909e" }}
             />
           ) : null}
         </div>
-      ) : null}
+      )}
       {children.length > 0 ? (
         <div className="-mx-1 flex flex-col">
           <button
@@ -1959,7 +1985,7 @@ function dueDateInputValue(dueDate: string | null): string {
   return `${date.getFullYear()}-${month}-${day}`;
 }
 
-const FIELD_LABEL_CLASS = "flex items-center gap-2 text-muted-foreground";
+const FIELD_LABEL_CLASS = "flex w-30 shrink-0 items-center gap-2 text-muted-foreground";
 
 function SectionTitle({ children }: { children: ReactNode }) {
   return <h3 className="mt-8 mb-2 text-sm font-semibold">{children}</h3>;
@@ -2181,182 +2207,198 @@ function TaskDetailSheet({
           />
           {actionError ? <p className="mt-2 text-xs text-error">{actionError}</p> : null}
 
-          <dl className="mt-6 grid grid-cols-[7.5rem_minmax(0,1fr)] items-center gap-x-3 gap-y-3 text-xs lg:grid-cols-[7.5rem_minmax(0,1fr)_7.5rem_minmax(0,1fr)]">
-            <dt className={FIELD_LABEL_CLASS}>
-              <CircleDotIcon className="size-4" />
-              Status
-            </dt>
-            <dd className="flex items-center gap-2">
-              <StatusMenu
-                task={task}
-                statuses={statuses}
-                busy={busy}
-                onChange={onChangeStatus}
-                pill
-              />
-            </dd>
-            <dt className={FIELD_LABEL_CLASS}>
-              <UsersIcon className="size-4" />
-              Assignees
-            </dt>
-            <dd>
-              <Menu>
-                <MenuTrigger
-                  render={
-                    <button
-                      type="button"
-                      disabled={!editable}
-                      className="flex max-w-full items-center gap-2 rounded-sm px-1 py-0.5 enabled:hover:bg-accent"
-                    />
-                  }
-                >
-                  <Assignees task={task} />
-                  <span className="truncate">
-                    {task.assignees.map((assignee) => assignee.username).join(", ") || "Unassigned"}
-                  </span>
-                </MenuTrigger>
-                <MenuPopup align="start" side="bottom">
-                  {members.length === 0 ? (
-                    <MenuItem disabled>No members found</MenuItem>
-                  ) : (
-                    members.map((member) => {
-                      const assigned = task.assignees.some((entry) => entry.id === member.id);
-                      return (
-                        <MenuCheckboxItem
-                          key={member.id}
-                          checked={assigned}
-                          onClick={() => toggleAssignee(member, assigned)}
-                        >
-                          {member.username}
-                        </MenuCheckboxItem>
-                      );
-                    })
-                  )}
-                </MenuPopup>
-              </Menu>
-            </dd>
-            <dt className={FIELD_LABEL_CLASS}>
-              <CalendarIcon className="size-4" />
-              Due date
-            </dt>
-            <dd className="flex items-center gap-1">
-              <Input
-                type="date"
-                size="compact"
-                disabled={!editable}
-                value={dueDateInputValue(task.due_date)}
-                onChange={(event) => {
-                  const value = event.target.value;
-                  void run((token, id) =>
-                    updateTask(token, id, {
-                      due_date: value ? new Date(`${value}T12:00:00`).getTime() : null,
-                      due_date_time: false,
-                    }),
-                  );
-                }}
-                className="w-40"
-              />
-            </dd>
-            <dt className={FIELD_LABEL_CLASS}>
-              <FlagIcon className="size-4" />
-              Priority
-            </dt>
-            <dd>
-              <Menu>
-                <MenuTrigger
-                  render={
-                    <button
-                      type="button"
-                      disabled={!editable}
-                      className="flex items-center gap-1 rounded-sm px-1 py-0.5 enabled:hover:bg-accent"
-                    />
-                  }
-                >
-                  <FlagIcon
-                    className="size-3.5"
-                    style={{ color: priority ? PRIORITY_COLORS[priority] : "#87909e" }}
-                  />
-                  {priority ? (PRIORITY_LABELS[priority] ?? "Priority") : "None"}
-                </MenuTrigger>
-                <MenuPopup align="start" side="bottom">
-                  <MenuRadioGroup
-                    value={priority ?? ""}
-                    onValueChange={(value) =>
-                      void run((token, id) =>
-                        updateTask(token, id, { priority: value ? Number(value) : null }),
-                      )
+          <dl className="mt-6 flex flex-wrap items-center gap-x-6 gap-y-3 text-xs">
+            <div className="flex min-w-[15rem] flex-1 basis-[calc(50%-0.75rem)] items-center gap-3">
+              <dt className={FIELD_LABEL_CLASS}>
+                <CircleDotIcon className="size-4" />
+                Status
+              </dt>
+              <dd className="flex min-w-0 items-center gap-2">
+                <StatusMenu
+                  task={task}
+                  statuses={statuses}
+                  busy={busy}
+                  onChange={onChangeStatus}
+                  pill
+                />
+              </dd>
+            </div>
+            <div className="flex min-w-[15rem] flex-1 basis-[calc(50%-0.75rem)] items-center gap-3">
+              <dt className={FIELD_LABEL_CLASS}>
+                <UsersIcon className="size-4" />
+                Assignees
+              </dt>
+              <dd className="min-w-0">
+                <Menu>
+                  <MenuTrigger
+                    render={
+                      <button
+                        type="button"
+                        disabled={!editable}
+                        className="flex max-w-full items-center gap-2 rounded-sm px-1 py-0.5 enabled:hover:bg-accent"
+                      />
                     }
                   >
-                    {PRIORITY_OPTIONS.map((value) => (
-                      <MenuRadioItem key={value} value={value} closeOnClick>
-                        <FlagIcon className="size-3.5" style={{ color: PRIORITY_COLORS[value] }} />
-                        {PRIORITY_LABELS[value]}
-                      </MenuRadioItem>
-                    ))}
-                    <MenuRadioItem value="" closeOnClick>
-                      None
-                    </MenuRadioItem>
-                  </MenuRadioGroup>
-                </MenuPopup>
-              </Menu>
-            </dd>
-            <dt className={FIELD_LABEL_CLASS}>
-              <TagIcon className="size-4" />
-              Tags
-            </dt>
-            <dd className="flex flex-wrap items-center gap-1">
-              {taskTags.map((tag) => (
-                <span
-                  key={tag.name}
-                  className="flex items-center gap-1 rounded-full bg-accent py-0.5 pr-0.5 pl-2 font-medium"
-                  style={tag.tag_bg ? { backgroundColor: tag.tag_bg, color: tag.tag_fg } : {}}
-                >
-                  {tag.name}
-                  <button
-                    type="button"
-                    disabled={!editable}
-                    onClick={() => void run((token, id) => setTaskTag(token, id, tag.name, false))}
-                    aria-label={`Remove tag ${tag.name}`}
-                    className="grid size-4 place-items-center rounded-xs enabled:hover:bg-black/10"
+                    <Assignees task={task} />
+                    <span className="truncate">
+                      {task.assignees.map((assignee) => assignee.username).join(", ") ||
+                        "Unassigned"}
+                    </span>
+                  </MenuTrigger>
+                  <MenuPopup align="start" side="bottom">
+                    {members.length === 0 ? (
+                      <MenuItem disabled>No members found</MenuItem>
+                    ) : (
+                      members.map((member) => {
+                        const assigned = task.assignees.some((entry) => entry.id === member.id);
+                        return (
+                          <MenuCheckboxItem
+                            key={member.id}
+                            checked={assigned}
+                            onClick={() => toggleAssignee(member, assigned)}
+                          >
+                            {member.username}
+                          </MenuCheckboxItem>
+                        );
+                      })
+                    )}
+                  </MenuPopup>
+                </Menu>
+              </dd>
+            </div>
+            <div className="flex min-w-[15rem] flex-1 basis-[calc(50%-0.75rem)] items-center gap-3">
+              <dt className={FIELD_LABEL_CLASS}>
+                <CalendarIcon className="size-4" />
+                Due date
+              </dt>
+              <dd className="flex min-w-0 items-center gap-1">
+                <Input
+                  type="date"
+                  size="compact"
+                  disabled={!editable}
+                  value={dueDateInputValue(task.due_date)}
+                  onChange={(event) => {
+                    const value = event.target.value;
+                    void run((token, id) =>
+                      updateTask(token, id, {
+                        due_date: value ? new Date(`${value}T12:00:00`).getTime() : null,
+                        due_date_time: false,
+                      }),
+                    );
+                  }}
+                  className="w-full max-w-40"
+                />
+              </dd>
+            </div>
+            <div className="flex min-w-[15rem] flex-1 basis-[calc(50%-0.75rem)] items-center gap-3">
+              <dt className={FIELD_LABEL_CLASS}>
+                <FlagIcon className="size-4" />
+                Priority
+              </dt>
+              <dd className="min-w-0">
+                <Menu>
+                  <MenuTrigger
+                    render={
+                      <button
+                        type="button"
+                        disabled={!editable}
+                        className="flex items-center gap-1 rounded-sm px-1 py-0.5 enabled:hover:bg-accent"
+                      />
+                    }
                   >
-                    <XIcon className="size-3" />
-                  </button>
-                </span>
-              ))}
-              <Menu>
-                <MenuTrigger
-                  render={
-                    <Button
-                      variant="ghost-muted"
-                      size="icon-micro"
-                      disabled={!editable}
-                      aria-label="Add tag"
+                    <FlagIcon
+                      className="size-3.5"
+                      style={{ color: priority ? PRIORITY_COLORS[priority] : "#87909e" }}
                     />
-                  }
-                >
-                  <PlusIcon />
-                </MenuTrigger>
-                <MenuPopup align="start" side="bottom">
-                  {spaceTags.filter((tag) => !taskTags.some((entry) => entry.name === tag.name))
-                    .length === 0 ? (
-                    <MenuItem disabled>No more tags in this space</MenuItem>
-                  ) : (
-                    spaceTags
-                      .filter((tag) => !taskTags.some((entry) => entry.name === tag.name))
-                      .map((tag) => (
-                        <MenuItem
-                          key={tag.name}
-                          onClick={() =>
-                            void run((token, id) => setTaskTag(token, id, tag.name, true))
-                          }
-                        >
-                          {tag.name}
-                        </MenuItem>
-                      ))
-                  )}
-                </MenuPopup>
-              </Menu>
-            </dd>
+                    {priority ? (PRIORITY_LABELS[priority] ?? "Priority") : "None"}
+                  </MenuTrigger>
+                  <MenuPopup align="start" side="bottom">
+                    <MenuRadioGroup
+                      value={priority ?? ""}
+                      onValueChange={(value) =>
+                        void run((token, id) =>
+                          updateTask(token, id, { priority: value ? Number(value) : null }),
+                        )
+                      }
+                    >
+                      {PRIORITY_OPTIONS.map((value) => (
+                        <MenuRadioItem key={value} value={value} closeOnClick>
+                          <FlagIcon
+                            className="size-3.5"
+                            style={{ color: PRIORITY_COLORS[value] }}
+                          />
+                          {PRIORITY_LABELS[value]}
+                        </MenuRadioItem>
+                      ))}
+                      <MenuRadioItem value="" closeOnClick>
+                        None
+                      </MenuRadioItem>
+                    </MenuRadioGroup>
+                  </MenuPopup>
+                </Menu>
+              </dd>
+            </div>
+            <div className="flex min-w-[15rem] flex-1 basis-[calc(50%-0.75rem)] items-center gap-3">
+              <dt className={FIELD_LABEL_CLASS}>
+                <TagIcon className="size-4" />
+                Tags
+              </dt>
+              <dd className="flex min-w-0 flex-wrap items-center gap-1">
+                {taskTags.map((tag) => (
+                  <span
+                    key={tag.name}
+                    className="flex items-center gap-1 rounded-full bg-accent py-0.5 pr-0.5 pl-2 font-medium"
+                    style={tag.tag_bg ? { backgroundColor: tag.tag_bg, color: tag.tag_fg } : {}}
+                  >
+                    {tag.name}
+                    <button
+                      type="button"
+                      disabled={!editable}
+                      onClick={() =>
+                        void run((token, id) => setTaskTag(token, id, tag.name, false))
+                      }
+                      aria-label={`Remove tag ${tag.name}`}
+                      className="grid size-4 place-items-center rounded-xs enabled:hover:bg-black/10"
+                    >
+                      <XIcon className="size-3" />
+                    </button>
+                  </span>
+                ))}
+                <Menu>
+                  <MenuTrigger
+                    render={
+                      <Button
+                        variant="ghost-muted"
+                        size="icon-micro"
+                        disabled={!editable}
+                        aria-label="Add tag"
+                      />
+                    }
+                  >
+                    <PlusIcon />
+                  </MenuTrigger>
+                  <MenuPopup align="start" side="bottom">
+                    {spaceTags.filter((tag) => !taskTags.some((entry) => entry.name === tag.name))
+                      .length === 0 ? (
+                      <MenuItem disabled>No more tags in this space</MenuItem>
+                    ) : (
+                      spaceTags
+                        .filter((tag) => !taskTags.some((entry) => entry.name === tag.name))
+                        .map((tag) => (
+                          <MenuItem
+                            key={tag.name}
+                            onClick={() =>
+                              void run((token, id) => setTaskTag(token, id, tag.name, true))
+                            }
+                          >
+                            {tag.name}
+                          </MenuItem>
+                        ))
+                    )}
+                  </MenuPopup>
+                </Menu>
+              </dd>
+            </div>
           </dl>
 
           {threads.length > 0 ? (
