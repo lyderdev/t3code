@@ -1,5 +1,5 @@
 const API_BASE = "https://api.clickup.com/api/v2";
-// Local-first app: the personal API token stays in this browser, never in server state.
+// Tokens live in this browser; clickupTokenSync also hands them to the primary server's agents.
 const TOKEN_STORAGE_KEY = "ldcode:clickup:token";
 
 export type ClickUpWorkspace = {
@@ -66,6 +66,7 @@ export type ClickUpAccount = {
 };
 
 const ACCOUNTS_STORAGE_KEY = "ldcode:clickup:accounts";
+export const CLICKUP_ACCOUNTS_CHANGED_EVENT = "ldcode:clickup:accounts-changed";
 
 /** Saved accounts, active one first. */
 export function readClickUpAccounts(): ReadonlyArray<ClickUpAccount> {
@@ -88,6 +89,7 @@ export function readClickUpAccounts(): ReadonlyArray<ClickUpAccount> {
 function writeClickUpAccounts(accounts: ReadonlyArray<ClickUpAccount>): void {
   window.localStorage.setItem(ACCOUNTS_STORAGE_KEY, JSON.stringify(accounts));
   window.localStorage.removeItem(TOKEN_STORAGE_KEY);
+  window.dispatchEvent(new Event(CLICKUP_ACCOUNTS_CHANGED_EVENT));
 }
 
 export function readClickUpToken(): string | null {

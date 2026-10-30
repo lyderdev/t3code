@@ -368,6 +368,7 @@ import {
   ScheduledTaskMutationResult,
 } from "./scheduledTask.ts";
 import { SecretRequestAnswerInput, SecretRequestError } from "./secretRequest.ts";
+import { ClickUpError, ClickUpSetTokensInput } from "./clickup.ts";
 import {
   ProjectCloneActionInput,
   ProjectCloneActionResult,
@@ -532,6 +533,7 @@ export const WS_METHODS = {
   scheduledTasksRunNow: "scheduledTasks.runNow",
   scheduledTasksRotateWebhookToken: "scheduledTasks.rotateWebhookToken",
   secretsAnswerRequest: "secrets.answerRequest",
+  clickupSetTokens: "clickup.setTokens",
   guestShareCreate: "guestShare.create",
   scheduledTasksListWebhookDeliveries: "scheduledTasks.listWebhookDeliveries",
   scheduledTasksGetWebhookDelivery: "scheduledTasks.getWebhookDelivery",
@@ -1886,6 +1888,11 @@ const WsSecretsAnswerRequestRpc = Rpc.make(WS_METHODS.secretsAnswerRequest, {
   error: Schema.Union([SecretRequestError, EnvironmentAuthorizationError]),
 });
 
+const WsClickUpSetTokensRpc = Rpc.make(WS_METHODS.clickupSetTokens, {
+  payload: ClickUpSetTokensInput,
+  error: Schema.Union([ClickUpError, EnvironmentAuthorizationError]),
+});
+
 const WsScheduledTasksListWebhookDeliveriesRpc = Rpc.make(
   WS_METHODS.scheduledTasksListWebhookDeliveries,
   {
@@ -1986,6 +1993,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsScheduledTasksRunNowRpc,
   WsScheduledTasksRotateWebhookTokenRpc,
   WsSecretsAnswerRequestRpc,
+  WsClickUpSetTokensRpc,
   WsScheduledTasksListWebhookDeliveriesRpc,
   WsScheduledTasksGetWebhookDeliveryRpc,
   WsServerReportClientActivityRpc,

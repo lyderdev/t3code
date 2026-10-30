@@ -40,6 +40,7 @@ import { projectComposerContextForProvider } from "@t3tools/shared/composerConte
 import { formatThreadLink } from "@t3tools/shared/threadLinks";
 import { buildCodexAdditionalContext } from "../../apps/server/src/provider/CodexDeveloperInstructions.ts";
 import { AttachmentToolkit } from "../../apps/server/src/mcp/toolkits/attachment/tools.ts";
+import { ClickUpToolkit } from "../../apps/server/src/mcp/toolkits/clickup/tools.ts";
 import { DeviceToolkit } from "../../apps/server/src/mcp/toolkits/device/tools.ts";
 import { EnvironmentToolkit } from "../../apps/server/src/mcp/toolkits/environment/tools.ts";
 import { HtmlToolkit } from "../../apps/server/src/mcp/toolkits/html/tools.ts";
@@ -361,6 +362,7 @@ const t3SourceTools: ReadonlyArray<Tool.Any> = [
   PreviewControlsToolkit,
   WorktreeToolkit,
   PullRequestsToolkit,
+  ClickUpToolkit,
   PreviewToolkit,
   DeviceToolkit,
   HtmlToolkit,

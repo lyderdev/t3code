@@ -67,6 +67,7 @@ import * as TextGeneration from "./textGeneration/TextGeneration.ts";
 import * as ProviderInstanceRegistryHydration from "./provider/ProviderInstanceRegistryHydration.ts";
 import * as ProjectSettingsOverrideSweep from "./provider/ProjectSettingsOverrideSweep.ts";
 import * as TerminalManager from "./terminal/Manager.ts";
+import * as ClickUpService from "./clickup/ClickUpService.ts";
 import * as McpHttpServer from "./mcp/McpHttpServer.ts";
 import * as PeerForwarding from "./peer/PeerForwarding.ts";
 import * as RemoteDelegation from "./peer/RemoteDelegation.ts";
@@ -681,6 +682,7 @@ const layerRuntimeCoreDependencies = layerRuntimeCoreDependenciesBase.pipe(
   Layer.provideMerge(CodexManagedTokenBroker.layer),
   Layer.provideMerge(layerServerEnvironment),
   Layer.provideMerge(layerAuth),
+  Layer.provideMerge(ClickUpService.layer),
   Layer.provideMerge(ServerSecretStore.layer),
   Layer.provideMerge(
     Layer.mergeAll(

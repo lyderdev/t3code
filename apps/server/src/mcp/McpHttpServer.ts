@@ -69,6 +69,8 @@ import { WorktreeToolkit } from "./toolkits/worktree/tools.ts";
 import * as WorktreeMcpService from "./WorktreeMcpService.ts";
 import * as PullRequestsHandlers from "./toolkits/pullRequests/handlers.ts";
 import { PullRequestsToolkit } from "./toolkits/pullRequests/tools.ts";
+import * as ClickUpHandlers from "./toolkits/clickup/handlers.ts";
+import { ClickUpToolkit } from "./toolkits/clickup/tools.ts";
 import * as DeviceHandlers from "./toolkits/device/handlers.ts";
 import {
   DeviceScreenshotTool,
@@ -1121,6 +1123,8 @@ export const layerPullRequestsToolkit = toolkitRegistration(
   PullRequestsHandlers.layer,
 );
 
+const layerClickUpToolkit = toolkitRegistration(ClickUpToolkit, ClickUpHandlers.layer);
+
 const layerDeviceStandardToolkitRegistration = toolkitRegistration(
   DeviceStandardToolkit,
   DeviceHandlers.layerStandard,
@@ -1155,6 +1159,7 @@ export const layerTools = Layer.mergeAll(
   layerPreviewControlsRegistration,
   layerWorktreeToolkitRegistration,
   layerPullRequestsToolkit,
+  layerClickUpToolkit,
   layerDeviceToolkit,
   layerHtmlToolkit,
 );

@@ -15,6 +15,7 @@ function setup(initial: Record<string, string> = {}) {
       setItem: (key: string, value: string) => store.set(key, value),
       removeItem: (key: string) => store.delete(key),
     },
+    dispatchEvent: () => true,
   });
   return store;
 }

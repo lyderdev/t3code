@@ -1512,6 +1512,11 @@ export function createServerEnvironmentAtoms<R, E>(
       scheduler: configScheduler,
       concurrency: configConcurrency,
     }),
+    setClickUpTokens: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:clickup:set-tokens",
+      tag: WS_METHODS.clickupSetTokens,
+      concurrency: { mode: "latest", key: ({ environmentId }) => environmentId },
+    }),
     createGuestShare: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:guest-share:create",
       tag: WS_METHODS.guestShareCreate,
