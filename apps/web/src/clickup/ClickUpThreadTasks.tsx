@@ -2,6 +2,7 @@ import type { OrchestrationMessageContext, ScopedThreadRef } from "@t3tools/cont
 
 import { ThreadDetailsSection } from "../components/chat/ThreadDetailsSection";
 import {
+  clickUpScope,
   mentionedClickUpTasks,
   openClickUpTaskInRightPanel,
   useClickUpTaskStatuses,
@@ -15,8 +16,11 @@ export function ClickUpThreadTasks(props: {
   messages: ReadonlyArray<{ readonly context?: OrchestrationMessageContext | undefined }>;
 }) {
   const tasks = mentionedClickUpTasks(props.messages);
-  const live = useClickUpTaskStatuses(tasks.map((task) => task.id));
   const { threadRef } = props;
+  const live = useClickUpTaskStatuses(
+    tasks.map((task) => task.id),
+    clickUpScope(threadRef),
+  );
   if (tasks.length === 0) return null;
   return (
     <ThreadDetailsSection headingId="thread-details-clickup-heading" title="ClickUp tasks">

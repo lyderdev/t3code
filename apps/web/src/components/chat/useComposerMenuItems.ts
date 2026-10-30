@@ -61,6 +61,7 @@ export function useComposerMenuItems({
   linkedEnvironments,
   gitCwd,
   activeThreadId,
+  clickUpScope,
   pullRequestProjectId,
   pullRequestRepository,
   threadPullRequests,
@@ -77,6 +78,8 @@ export function useComposerMenuItems({
   readonly linkedEnvironments: ReadonlyMap<EnvironmentId, string>;
   readonly gitCwd: string | null;
   readonly activeThreadId: ThreadId | null;
+  /** The ClickUp panel this composer opens tasks in. */
+  readonly clickUpScope: string | null;
   readonly pullRequestProjectId: ProjectId | null;
   readonly pullRequestRepository: string | null;
   readonly threadPullRequests: ReadonlyArray<ThreadPullRequestLink> | undefined;
@@ -174,7 +177,7 @@ export function useComposerMenuItems({
         }),
   );
 
-  const clickUpTasks = useClickUpMentionTasks(composerTriggerKind === "pull-request");
+  const clickUpTasks = useClickUpMentionTasks(composerTriggerKind === "pull-request", clickUpScope);
   const clickUpItems: ComposerCommandItem[] =
     composerTrigger?.kind === "pull-request"
       ? matchClickUpTasks(clickUpTasks, composerTrigger.query).map((task) => ({

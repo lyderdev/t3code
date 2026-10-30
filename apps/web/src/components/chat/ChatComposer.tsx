@@ -205,6 +205,7 @@ import { resolveComposerMenuActiveItemId } from "./composerMenuHighlight";
 import { buildPullRequestReferenceContext } from "../pullRequest/pullRequestDetail.logic";
 import {
   buildClickUpTaskContext,
+  clickUpScope,
   fillClickUpTaskChip,
   openClickUpTaskInRightPanel,
 } from "../../clickup/clickupTaskMentions";
@@ -1122,6 +1123,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     linkedEnvironments,
     gitCwd,
     activeThreadId,
+    clickUpScope: clickUpScope(routeThreadRef),
     pullRequestProjectId,
     pullRequestRepository,
     threadPullRequests,
@@ -1971,7 +1973,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           appendReference: false,
         });
         setComposerHighlightedItemId(null);
-        void fillClickUpTaskChip(composerDraftTarget, item.task);
+        void fillClickUpTaskChip(composerDraftTarget, item.task, clickUpScope(routeThreadRef));
       }
       return;
     }

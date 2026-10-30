@@ -106,6 +106,7 @@ import {
   setTaskTag,
   updateTask,
   updateTaskStatus,
+  updateClickUpAccount,
   type ClickUpAccount,
   type ClickUpComment,
   type ClickUpIdentity,
@@ -120,6 +121,7 @@ import {
 } from "./api";
 import {
   buildClickUpTaskContext,
+  clickUpPanelStorageKey,
   fillClickUpTaskChip,
   setClickUpOpenTask,
   useClickUpOpenTaskId,
@@ -190,12 +192,12 @@ type PageUiState = {
   readonly view: View;
   readonly sidebarOpen: boolean;
   readonly subtasks: SubtaskMode;
-  /** Selected workspace and list; each panel keeps its own so threads on different workspaces stay apart. */
+  /** The panel's own account, workspace and list, so threads on different workspaces stay apart. */
+  readonly token: string | null;
   readonly workspaceId: string | null;
   readonly spaceId: string | null;
   readonly listId: string | null;
 };
-const UI_STORAGE_KEY = "ldcode:clickup:ui";
 const NARROW_PAGE_WIDTH = 1024;
 
 const storedId = (value: unknown): string | null =>
@@ -206,6 +208,7 @@ function readPageUiState(storageKey: string): PageUiState {
     view: "list",
     sidebarOpen: true,
     subtasks: "collapsed",
+    token: null,
     workspaceId: null,
     spaceId: null,
     listId: null,
@@ -221,6 +224,7 @@ function readPageUiState(storageKey: string): PageUiState {
         parsed.subtasks === "expanded" || parsed.subtasks === "separate"
           ? parsed.subtasks
           : "collapsed",
+      token: storedId(parsed.token),
       workspaceId: storedId(parsed.workspaceId),
       spaceId: storedId(parsed.spaceId),
       listId: storedId(parsed.listId),
@@ -250,9 +254,17 @@ function threadIsRunning(thread: EnvironmentThreadShell): boolean {
 }
 
 export function ClickUpPage({ scope = null }: { readonly scope?: string | null }) {
-  const storageKey = scope === null ? UI_STORAGE_KEY : `${UI_STORAGE_KEY}:panel:${scope}`;
+  const storageKey = clickUpPanelStorageKey(scope);
   const [accounts, setAccounts] = useState(readClickUpAccounts);
-  const token = accounts[0]?.token ?? null;
+  const [ui, setUi] = useState(() => readPageUiState(storageKey));
+  const updateUi = (patch: Partial<PageUiState>) => {
+    const next = { ...ui, ...patch };
+    window.localStorage.setItem(storageKey, JSON.stringify(next));
+    setUi(next);
+  };
+  const account = accounts.find((entry) => entry.token === ui.token) ?? accounts[0];
+  const token = account?.token ?? null;
+  const workspaceId = ui.workspaceId ?? account?.workspaceId;
   const [mode, setMode] = useState<Mode>(() => (token ? "live" : "gate"));
   const [identity, setIdentity] = useState<ClickUpIdentity | null>(null);
   const [workspace, setWorkspace] = useState<ClickUpWorkspace | null>(null);
@@ -269,14 +281,7 @@ export function ClickUpPage({ scope = null }: { readonly scope?: string | null }
   const [loadingTasks, setLoadingTasks] = useState(false);
   const [busyTaskId, setBusyTaskId] = useState<string | null>(null);
   const [newTask, setNewTask] = useState<NewTaskDraft | null>(null);
-  const [ui, setUi] = useState(() => readPageUiState(storageKey));
-  const updateUi = (patch: Partial<PageUiState>) => {
-    const next = { ...ui, ...patch };
-    window.localStorage.setItem(storageKey, JSON.stringify(next));
-    setUi(next);
-  };
   const { view, sidebarOpen } = ui;
-  const workspaceId = ui.workspaceId ?? accounts[0]?.workspaceId;
   const setView = (next: View) => updateUi({ view: next });
   // Below this the spaces sidebar costs more than it gives: a small window or the
   // thread's right panel, where the page is narrow but the viewport is not.
@@ -333,9 +338,9 @@ export function ClickUpPage({ scope = null }: { readonly scope?: string | null }
         setWorkspace(target);
         setWorkspaces(workspaceList);
         const workspaceLabel = workspaceList.length > 1 ? "All workspaces" : target.name;
-        const stored = readClickUpAccounts()[0];
-        if (stored?.email !== user.email || stored.workspaceLabel !== workspaceLabel) {
-          saveClickUpAccount({ ...stored, token, email: user.email, workspaceLabel });
+        const stored = readClickUpAccounts().find((entry) => entry.token === token);
+        if (stored && (stored.email !== user.email || stored.workspaceLabel !== workspaceLabel)) {
+          updateClickUpAccount({ ...stored, email: user.email, workspaceLabel });
           setAccounts(readClickUpAccounts());
         }
         setSpaces(spaceList);
@@ -387,7 +392,7 @@ export function ClickUpPage({ scope = null }: { readonly scope?: string | null }
         setConnecting(false);
       } else {
         resetWorkspace();
-        updateUi({ workspaceId: null, spaceId: null, listId: null });
+        updateUi({ token: next, workspaceId: null, spaceId: null, listId: null });
       }
       setAccounts(readClickUpAccounts());
       setMode("live");
@@ -426,14 +431,17 @@ export function ClickUpPage({ scope = null }: { readonly scope?: string | null }
     setError(null);
   };
 
-  const switchAccount = (account: ClickUpAccount) => {
-    if (account.token === token) return;
-    saveClickUpAccount(account);
+  const switchAccount = (next: ClickUpAccount) => {
+    if (next.token === token) return;
     resetWorkspace();
-    updateUi({ workspaceId: null, spaceId: null, listId: null });
+    updateUi({ token: next.token, workspaceId: null, spaceId: null, listId: null });
     setWorkspaces([]);
     setConnecting(true);
-    setAccounts(readClickUpAccounts());
+    // The full page also picks the default account for new threads.
+    if (scope === null) {
+      saveClickUpAccount(next);
+      setAccounts(readClickUpAccounts());
+    }
   };
 
   const switchWorkspace = (next: ClickUpWorkspace) => {
@@ -447,6 +455,7 @@ export function ClickUpPage({ scope = null }: { readonly scope?: string | null }
     if (token) removeClickUpAccount(token);
     const remaining = readClickUpAccounts();
     resetWorkspace();
+    updateUi({ token: null, workspaceId: null, spaceId: null, listId: null });
     setWorkspaces([]);
     setAccounts(remaining);
     setConnecting(remaining.length > 0);
@@ -598,7 +607,7 @@ export function ClickUpPage({ scope = null }: { readonly scope?: string | null }
       store.addReviewComment(opened.draftId, buildClickUpTaskContext(task), {
         insertAtCaret: false,
       });
-      void fillClickUpTaskChip(opened.draftId, task);
+      void fillClickUpTaskChip(opened.draftId, task, scope);
     }
   };
 

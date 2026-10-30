@@ -4,6 +4,7 @@ import { reviewCommentContextRecord } from "../lib/composerContextRecords";
 import type { ClickUpTask } from "./api";
 import {
   buildClickUpTaskContext,
+  clickUpTokenForScope,
   mentionedClickUpTasks,
   setClickUpOpenTask,
   useClickUpOpenTaskStore,
@@ -63,4 +64,29 @@ it("keeps a separate open task per ClickUp panel", () => {
   expect(JSON.parse(store.get("ldcode:clickup:open-task") ?? "{}")).toEqual({
     "env-two:thread-two": "b2",
   });
+});
+
+it("uses the ClickUp account each panel chose, else the active one", () => {
+  const store = new Map<string, string>();
+  vi.stubGlobal("window", {
+    localStorage: {
+      getItem: (key: string) => store.get(key) ?? null,
+      setItem: (key: string, value: string) => store.set(key, value),
+    },
+  });
+  store.set(
+    "ldcode:clickup:accounts",
+    JSON.stringify([
+      { token: "pk_a", email: "a@x.dev" },
+      { token: "pk_b", email: "b@x.dev" },
+    ]),
+  );
+  store.set("ldcode:clickup:ui:panel:env-one:thread-one", JSON.stringify({ token: "pk_b" }));
+
+  expect(clickUpTokenForScope("env-one:thread-one")).toBe("pk_b");
+  expect(clickUpTokenForScope("env-two:thread-two")).toBe("pk_a");
+  expect(clickUpTokenForScope(null)).toBe("pk_a");
+
+  store.set("ldcode:clickup:ui:panel:env-two:thread-two", JSON.stringify({ token: "pk_gone" }));
+  expect(clickUpTokenForScope("env-two:thread-two")).toBe("pk_a");
 });

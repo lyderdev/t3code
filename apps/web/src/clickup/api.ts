@@ -102,6 +102,13 @@ export function saveClickUpAccount(account: ClickUpAccount): void {
   ]);
 }
 
+/** Updates metadata without changing which account is active. */
+export function updateClickUpAccount(account: ClickUpAccount): void {
+  writeClickUpAccounts(
+    readClickUpAccounts().map((entry) => (entry.token === account.token ? account : entry)),
+  );
+}
+
 export function removeClickUpAccount(token: string): void {
   writeClickUpAccounts(readClickUpAccounts().filter((entry) => entry.token !== token));
   invalidateClickUpCache(`${token}\n`);

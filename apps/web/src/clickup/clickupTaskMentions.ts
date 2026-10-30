@@ -10,16 +10,53 @@ import { useRightPanelStore } from "../rightPanelStore";
 import {
   fetchMyTasks,
   fetchTaskDetail,
+  readClickUpAccounts,
   readClickUpToken,
   type ClickUpTask,
   type ClickUpTaskDetail,
 } from "./api";
 
 const RESULT_LIMIT = 8;
+
+/** Standalone ClickUp page state; each thread's right-panel tab appends its scope. */
+const CLICKUP_UI_STORAGE_KEY = "ldcode:clickup:ui";
+
+export const clickUpScope = (threadRef: ScopedThreadRef): string => scopedThreadKey(threadRef);
+
+export function clickUpPanelStorageKey(scope: string | null): string {
+  return scope === null ? CLICKUP_UI_STORAGE_KEY : `${CLICKUP_UI_STORAGE_KEY}:panel:${scope}`;
+}
+
+function readStoredToken(scope: string): string | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const parsed: unknown = JSON.parse(
+      window.localStorage.getItem(clickUpPanelStorageKey(scope)) ?? "{}",
+    );
+    if (!parsed || typeof parsed !== "object") return null;
+    const token = (parsed as { token?: unknown }).token;
+    return typeof token === "string" ? token : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The ClickUp account a panel uses, falling back to the active account. */
+export function clickUpTokenForScope(scope: string | null = null): string | null {
+  const chosen = scope === null ? null : readStoredToken(scope);
+  if (chosen !== null && readClickUpAccounts().some((entry) => entry.token === chosen)) {
+    return chosen;
+  }
+  return readClickUpToken();
+}
+
 /** The signed-in ClickUp user's tasks, loaded only while the `#` menu is open. */
-export function useClickUpMentionTasks(active: boolean): ReadonlyArray<ClickUpTask> {
+export function useClickUpMentionTasks(
+  active: boolean,
+  scope: string | null = null,
+): ReadonlyArray<ClickUpTask> {
   const [tasks, setTasks] = useState<ReadonlyArray<ClickUpTask>>([]);
-  const token = active ? readClickUpToken() : null;
+  const token = active ? clickUpTokenForScope(scope) : null;
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- fetches from the ClickUp API, outside React.
   useEffect(() => {
     if (token === null) return;
@@ -116,12 +153,13 @@ export function mentionedClickUpTasks(
 /** Live status per task id; empty without a ClickUp token. */
 export function useClickUpTaskStatuses(
   taskIds: ReadonlyArray<string>,
+  scope: string | null = null,
 ): ReadonlyMap<string, ClickUpTask["status"]> {
   const [statuses, setStatuses] = useState<ReadonlyMap<string, ClickUpTask["status"]>>(new Map());
   const key = taskIds.join(",");
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- reads task statuses from the ClickUp API, outside React.
   useEffect(() => {
-    const token = readClickUpToken();
+    const token = clickUpTokenForScope(scope);
     if (token === null || key === "") return;
     let cancelled = false;
     void Promise.allSettled(key.split(",").map((id) => fetchTaskDetail(token, id))).then(
@@ -137,12 +175,12 @@ export function useClickUpTaskStatuses(
     return () => {
       cancelled = true;
     };
-  }, [key]);
+  }, [key, scope]);
   return statuses;
 }
 
 export function openClickUpTaskInRightPanel(threadRef: ScopedThreadRef, taskId: string): void {
-  setClickUpOpenTask(taskId, scopedThreadKey(threadRef));
+  setClickUpOpenTask(taskId, clickUpScope(threadRef));
   useRightPanelStore.getState().open(threadRef, "clickup");
 }
 
@@ -217,8 +255,11 @@ function buildClickUpTaskDetailContext(task: ClickUpTaskDetail): ReviewCommentCo
 }
 
 /** Full ticket from the ClickUp API; falls back to the summary without a token or on failure. */
-async function loadClickUpTaskContext(task: ClickUpTask): Promise<ReviewCommentContext> {
-  const token = readClickUpToken();
+async function loadClickUpTaskContext(
+  task: ClickUpTask,
+  scope: string | null,
+): Promise<ReviewCommentContext> {
+  const token = clickUpTokenForScope(scope);
   if (token === null) return buildClickUpTaskContext(task);
   return fetchTaskDetail(token, task.id).then(buildClickUpTaskDetailContext, () =>
     buildClickUpTaskContext(task),
@@ -229,8 +270,9 @@ async function loadClickUpTaskContext(task: ClickUpTask): Promise<ReviewCommentC
 export async function fillClickUpTaskChip(
   target: ComposerThreadTarget,
   task: ClickUpTask,
+  scope: string | null = null,
 ): Promise<void> {
-  const detail = await loadClickUpTaskContext(task);
+  const detail = await loadClickUpTaskContext(task, scope);
   const store = useComposerDraftStore.getState();
   if (store.getComposerDraft(target)?.reviewComments.some((entry) => entry.id === detail.id)) {
     store.addReviewComment(target, detail, { appendReference: false });
