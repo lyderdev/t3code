@@ -2,6 +2,8 @@ import { PullRequestContextMetadata } from "@t3tools/contracts";
 import { serializeComposerFileLink } from "@t3tools/shared/composerTrigger";
 import { Option, Schema } from "effect";
 
+import { CLICKUP_TASK_DRAG_TYPE } from "../../clickup/clickupTaskDrag";
+
 export const COMPOSER_MENTION_DRAG_TYPE = "application/x-t3code-composer-mention";
 
 export const COMPOSER_PULL_REQUEST_DRAG_TYPE = "application/x-t3code-pull-request";
@@ -21,7 +23,9 @@ export function composerMentionFromTreePath(treePath: string): string | null {
 
 export function dataTransferHasComposerMention(types: ReadonlyArray<string>): boolean {
   return (
-    types.includes(COMPOSER_MENTION_DRAG_TYPE) || types.includes(COMPOSER_PULL_REQUEST_DRAG_TYPE)
+    types.includes(COMPOSER_MENTION_DRAG_TYPE) ||
+    types.includes(COMPOSER_PULL_REQUEST_DRAG_TYPE) ||
+    types.includes(CLICKUP_TASK_DRAG_TYPE)
   );
 }
 
@@ -42,6 +46,7 @@ interface ComposerMentionDragEvent {
 export interface ComposerMentionDropHost {
   insertMentionAtEnd(text: string): boolean;
   insertPullRequestAtEnd(pullRequest: PullRequestContextMetadata): boolean;
+  insertClickUpTaskAtEnd(taskJson: string): boolean;
   setDragActive(active: boolean): void;
   onInsertRejected(): void;
 }
@@ -89,6 +94,13 @@ export function makeComposerMentionDragHandlers(
           event.dataTransfer.getData(COMPOSER_PULL_REQUEST_DRAG_TYPE),
         );
         if (Option.isSome(pullRequest) && !host.insertPullRequestAtEnd(pullRequest.value)) {
+          host.onInsertRejected();
+        }
+        return;
+      }
+      if (event.dataTransfer.types.includes(CLICKUP_TASK_DRAG_TYPE)) {
+        const task = event.dataTransfer.getData(CLICKUP_TASK_DRAG_TYPE);
+        if (task.length > 0 && !host.insertClickUpTaskAtEnd(task)) {
           host.onInsertRejected();
         }
         return;

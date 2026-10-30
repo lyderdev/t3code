@@ -2,7 +2,11 @@ import { workspaceAreaProps } from "../lib/workspaceFocus";
 import { sourceControlClients } from "@t3tools/client-runtime/source-control-clients";
 import { resolveNewThreadModelSelection } from "@t3tools/shared/usageLimits";
 import { queuedRunEditBlockedReason } from "@t3tools/client-runtime/queued-run-edit";
-import { ScrollToEndButton, WorkspaceFileDropOverlay } from "./chat/TimelineOverlays";
+import {
+  ClickUpTaskDropOverlay,
+  ScrollToEndButton,
+  WorkspaceFileDropOverlay,
+} from "./chat/TimelineOverlays";
 import { usePasteToFocusComposer } from "./chat/usePasteToFocusComposer";
 import { announcedRun, isDetailBehindShell } from "./chat/threadActivityAnnouncement";
 import {
@@ -111,6 +115,7 @@ import { resolveThreadReferenceCopyTarget } from "@t3tools/client-runtime/thread
 import { resolveTerminalSessionLabel } from "@t3tools/shared/terminalLabels";
 import { useAtomValue } from "@effect/atom-react";
 import { type SetStateAction, use, useEffect, useLayoutEffect, useRef, useState } from "react";
+import type { DragEvent as ReactDragEvent } from "react";
 import { BackgroundThreadContext } from "./chat/backgroundThread";
 import { useLocation, useNavigate } from "@tanstack/react-router";
 import { assistantCitationFromLocation } from "../lib/assistantCitationNavigation";
@@ -126,6 +131,8 @@ import {
 } from "@t3tools/client-runtime/state/runtime";
 import { AsyncResult } from "effect/reactivity";
 import { isElectron } from "../env";
+import { attachClickUpTask, clickUpScope } from "../clickup/clickupTaskMentions";
+import { isClickUpTaskDrag, readClickUpTaskDrop } from "../clickup/clickupTaskDrag";
 import { useDiffPanelStore } from "../diffPanelStore";
 import { useActiveThreadRef } from "../hooks/useActiveThreadRef";
 import { composerRequiresModifier } from "../composer-logic";
@@ -633,6 +640,36 @@ export default function ChatView(props: ChatViewProps) {
   };
   const citeAssistantTextStable = useStableCallback(citeAssistantText);
   const [isWorkspaceFileDragActive, setIsWorkspaceFileDragActive] = useState(false);
+  const [isClickUpDragOver, setIsClickUpDragOver] = useState(false);
+  const handleClickUpDragEnter = (event: ReactDragEvent<HTMLDivElement>) => {
+    if (!isClickUpTaskDrag(event.dataTransfer.types)) return;
+    event.preventDefault();
+    setIsClickUpDragOver(true);
+  };
+  const handleClickUpDragOver = (event: ReactDragEvent<HTMLDivElement>) => {
+    if (!isClickUpTaskDrag(event.dataTransfer.types)) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+    setIsClickUpDragOver(true);
+  };
+  const handleClickUpDragLeave = (event: ReactDragEvent<HTMLDivElement>) => {
+    const next = event.relatedTarget;
+    if (next instanceof Node && event.currentTarget.contains(next)) return;
+    setIsClickUpDragOver(false);
+  };
+  const handleClickUpDrop = (event: ReactDragEvent<HTMLDivElement>) => {
+    setIsClickUpDragOver(false);
+    // The composer claims drops over itself before they reach this column.
+    if (event.defaultPrevented) return;
+    const task = readClickUpTaskDrop(event);
+    if (task === null) return;
+    attachClickUpTask(
+      draftId ?? routeThreadRef,
+      task,
+      clickUpScope(routeThreadRef),
+      routeKind === "server" ? routeThreadRef : null,
+    );
+  };
   const [optimisticBlobPreviews] = useState(createOptimisticBlobPreviews);
   const [heldOptimisticUserMessages, setHeldOptimisticUserMessages] = useState(() =>
     emptyOptimisticUserMessages(threadId),
@@ -682,11 +719,14 @@ export default function ChatView(props: ChatViewProps) {
 
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- window dragend listener that clears the workspace file drag state
   useEffect(() => {
-    if (!isWorkspaceFileDragActive) return;
-    const clearWorkspaceFileDrag = () => setIsWorkspaceFileDragActive(false);
-    window.addEventListener("dragend", clearWorkspaceFileDrag);
-    return () => window.removeEventListener("dragend", clearWorkspaceFileDrag);
-  }, [isWorkspaceFileDragActive]);
+    if (!isWorkspaceFileDragActive && !isClickUpDragOver) return;
+    const clearDragState = () => {
+      setIsWorkspaceFileDragActive(false);
+      setIsClickUpDragOver(false);
+    };
+    window.addEventListener("dragend", clearDragState);
+    return () => window.removeEventListener("dragend", clearDragState);
+  }, [isWorkspaceFileDragActive, isClickUpDragOver]);
   const prefersPlanSidebarSheet = useMediaQuery(RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY);
   const isMobileViewport = useMediaQuery("max-sm");
   const [workspaceLayoutElement, setWorkspaceLayoutElement] = useState<HTMLDivElement | null>(null);
@@ -3197,13 +3237,18 @@ export default function ChatView(props: ChatViewProps) {
       {rightPanelControlsAtRoot ? panelLayoutControls : null}
       <div
         className={cn(
-          "flex min-h-0 min-w-0 flex-col overflow-x-hidden",
+          "relative flex min-h-0 min-w-0 flex-col overflow-x-hidden",
           rightPanelMaximized ? "w-0 flex-none" : "flex-1",
         )}
+        onDragEnter={handleClickUpDragEnter}
+        onDragOver={handleClickUpDragOver}
+        onDragLeave={handleClickUpDragLeave}
+        onDrop={handleClickUpDrop}
         data-chat-column-maximized-away={rightPanelMaximized ? "true" : "false"}
         data-chat-column
         inert={rightPanelMaximized}
       >
+        {isClickUpDragOver ? <ClickUpTaskDropOverlay /> : null}
         <header
           ref={threadPanelPopoverAnchorRef}
           data-chat-header

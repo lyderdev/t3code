@@ -53,6 +53,7 @@ import {
   memo,
   useRef,
   useState,
+  type DragEvent as ReactDragEvent,
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
@@ -113,6 +114,8 @@ import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuShortcut, MenuTrigger } f
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { MiddleTruncate } from "../ui/middle-truncate";
 import { useThreadHasUnsentDraft } from "../../composerDraftStore";
+import { attachClickUpTask, clickUpScope } from "../../clickup/clickupTaskMentions";
+import { isClickUpTaskDrag, readClickUpTaskDrop } from "../../clickup/clickupTaskDrag";
 
 // The fields thread rows show. Provider status pushes refresh `checkedAt`,
 // status and auth on every provider; leaving those out keeps each
@@ -628,6 +631,40 @@ function ThreadRenameInput(props: {
   );
 }
 
+/** The thread row is a drop target for a ClickUp ticket dragged out of the ClickUp page. */
+function useClickUpTaskDrop(threadRef: ScopedThreadRef, onDropped: () => void) {
+  const [isDragOver, setIsDragOver] = useState(false);
+  return {
+    isDragOver,
+    handlers: {
+      onDragEnter(event: ReactDragEvent<HTMLElement>) {
+        if (!isClickUpTaskDrag(event.dataTransfer.types)) return;
+        event.preventDefault();
+        setIsDragOver(true);
+      },
+      onDragOver(event: ReactDragEvent<HTMLElement>) {
+        if (!isClickUpTaskDrag(event.dataTransfer.types)) return;
+        event.preventDefault();
+        event.stopPropagation();
+        event.dataTransfer.dropEffect = "copy";
+        setIsDragOver(true);
+      },
+      onDragLeave(event: ReactDragEvent<HTMLElement>) {
+        const next = event.relatedTarget;
+        if (next instanceof Node && event.currentTarget.contains(next)) return;
+        setIsDragOver(false);
+      },
+      onDrop(event: ReactDragEvent<HTMLElement>) {
+        const task = readClickUpTaskDrop(event);
+        setIsDragOver(false);
+        if (task === null) return;
+        attachClickUpTask(threadRef, task, clickUpScope(threadRef), threadRef);
+        onDropped();
+      },
+    },
+  };
+}
+
 const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowProps) {
   const {
     isRenaming,
@@ -654,6 +691,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
   } = props;
   const threadRef = scopeThreadRef(thread.environmentId, thread.id);
   const threadKey = scopedThreadKey(threadRef);
+  const clickUpDrop = useClickUpTaskDrop(threadRef, () => onThreadActivate(threadRef));
   const canOperateThread = useEnvironmentScope(thread.environmentId, AuthOrchestrationOperateScope);
   const { leaseLiveStatus, rowRef: leaseRowRef } = useSidebarRowSubscriptionLease(props.isActive);
   const { revealRef } = props;
@@ -960,6 +998,8 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
       "opacity-70 transition-opacity hover:opacity-100 focus-within:opacity-100 motion-reduce:transition-none",
     isFileDragOver && "ring-1 ring-inset ring-primary/70",
     isFileDragOver && !props.isActive && !isSelected && "bg-sidebar-row-hover",
+    clickUpDrop.isDragOver && "ring-1 ring-inset ring-primary/70",
+    clickUpDrop.isDragOver && !props.isActive && !isSelected && "bg-sidebar-row-hover",
     props.sortable?.isDragging &&
       "bg-sidebar bg-linear-to-b from-sidebar-row-active to-sidebar-row-active text-sidebar-foreground opacity-100 shadow-lg",
   );
@@ -1197,6 +1237,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
         data-thread-item={threadKey}
         {...sortableRootProps}
         {...(fileDropHandlers ?? {})}
+        {...clickUpDrop.handlers}
         className={cn(
           "list-none [content-visibility:auto] [contain-intrinsic-size:auto_36px]",
           metaLine !== null && multiline && "[contain-intrinsic-size:auto_54px]",
@@ -1385,6 +1426,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
       data-thread-item={threadKey}
       {...sortableRootProps}
       {...(fileDropHandlers ?? {})}
+      {...clickUpDrop.handlers}
       className={cn(
         "list-none py-0.5 [content-visibility:auto] [contain-intrinsic-size:auto_78px]",
         metaLineEmpty && "[contain-intrinsic-size:auto_58px]",
@@ -1662,6 +1704,7 @@ export const SidebarSearchResultRow = memo(function SidebarSearchResultRow(props
   });
   const terminalStatus = terminalStatusFromRunningIds(runningTerminalIds);
   const [isFileDragOver, setIsFileDragOver] = useState(false);
+  const clickUpDrop = useClickUpTaskDrop(threadRef, props.onSelect);
   const onFileDropThreads = props.onFileDropThreads;
   const fileDropHandlers = makeWorkspaceFileDropHandlers({
     setDragActive: (active) => setFileDragActive(setIsFileDragOver, active),
@@ -1676,6 +1719,7 @@ export const SidebarSearchResultRow = memo(function SidebarSearchResultRow(props
       role="presentation"
       className="list-none"
       {...fileDropHandlers}
+      {...clickUpDrop.handlers}
     >
       <Tooltip>
         <TooltipTrigger
@@ -1699,6 +1743,8 @@ export const SidebarSearchResultRow = memo(function SidebarSearchResultRow(props
                   : "text-sidebar-muted-foreground/75 hover:bg-sidebar-row-hover hover:text-sidebar-foreground",
                 isFileDragOver && "ring-1 ring-inset ring-primary/70",
                 isFileDragOver && !props.isRouteActive && "bg-sidebar-row-hover",
+                clickUpDrop.isDragOver && "ring-1 ring-inset ring-primary/70",
+                clickUpDrop.isDragOver && !props.isRouteActive && "bg-sidebar-row-hover",
               )}
             />
           }

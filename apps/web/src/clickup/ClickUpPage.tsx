@@ -8,13 +8,13 @@ import {
   useSensor,
   useSensors,
 } from "@dnd-kit/core";
-import { scopeProjectRef } from "@t3tools/client-runtime/environment";
+import { scopeProjectRef, scopeThreadRef } from "@t3tools/client-runtime/environment";
 import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
 import {
   threadRuntimeIsActive,
   type EnvironmentThreadShell,
 } from "@t3tools/client-runtime/state/models";
-import { Link } from "@tanstack/react-router";
+import { Link, useRouter } from "@tanstack/react-router";
 import {
   ArrowLeftIcon,
   CalendarIcon,
@@ -48,7 +48,7 @@ import {
   type ReactNode,
 } from "react";
 
-import { useComposerDraftStore } from "~/composerDraftStore";
+import { useComposerDraftStore, type ComposerThreadTarget } from "~/composerDraftStore";
 import { requestConfirmDialog } from "~/confirmDialog";
 import { useNewThreadHandler } from "~/hooks/useHandleNewThread";
 import { observeResize } from "~/lib/observeResize";
@@ -122,10 +122,17 @@ import {
 import {
   buildClickUpTaskContext,
   clickUpPanelStorageKey,
+  clickUpScope,
   fillClickUpTaskChip,
   setClickUpOpenTask,
   useClickUpOpenTaskId,
 } from "./clickupTaskMentions";
+import { CLICKUP_TASK_DRAG_TYPE, encodeClickUpTaskDragPayload } from "./clickupTaskDrag";
+import {
+  linkTasksToThread,
+  readTaskThreads,
+  type ClickUpTaskThreadRef,
+} from "./clickupTaskThreads";
 import {
   activeFilterCount,
   DUE_FILTER_OPTIONS,
@@ -231,21 +238,6 @@ function readPageUiState(storageKey: string): PageUiState {
     };
   } catch {
     return fallback;
-  }
-}
-
-type TaskThreadRef = { readonly environmentId: string; readonly threadId: string };
-const TASK_THREADS_STORAGE_KEY = "t3code:clickup:task-threads";
-
-// shortcut: links live in this browser only, so other clients do not see them; move to the thread record if that matters.
-function readTaskThreads(): Record<string, ReadonlyArray<TaskThreadRef>> {
-  try {
-    const parsed: unknown = JSON.parse(
-      window.localStorage.getItem(TASK_THREADS_STORAGE_KEY) ?? "{}",
-    );
-    return parsed && typeof parsed === "object" ? (parsed as Record<string, TaskThreadRef[]>) : {};
-  } catch {
-    return {};
   }
 }
 
@@ -568,6 +560,7 @@ export function ClickUpPage({ scope = null }: { readonly scope?: string | null }
       return next;
     });
   const handleNewThread = useNewThreadHandler();
+  const router = useRouter();
   const allProjects = useProjects();
   const threadShells = useThreadShells();
   const projects = sortScopedProjectsForSidebar(
@@ -587,6 +580,27 @@ export function ClickUpPage({ scope = null }: { readonly scope?: string | null }
     );
     if (threads.length > 0) threadsByTask.set(taskId, threads);
   }
+  const openThreads = threadShells
+    .filter((thread) => thread.archivedAt === null)
+    .toSorted((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  const writePickedTasksToComposer = (
+    target: ComposerThreadTarget,
+    accountScope: string | null,
+  ): ReadonlyArray<ClickUpTask> => {
+    const store = useComposerDraftStore.getState();
+    const tasks = [...picked.values()];
+    setPicked(new Map());
+    for (const task of tasks) {
+      store.addReviewComment(target, buildClickUpTaskContext(task), { insertAtCaret: false });
+      void fillClickUpTaskChip(target, task, accountScope);
+    }
+    return tasks;
+  };
+
+  const linkPickedTasks = (tasks: ReadonlyArray<ClickUpTask>, ref: ClickUpTaskThreadRef) => {
+    setTaskThreads(linkTasksToThread(tasks, ref));
+  };
+
   const startThread = async (project: EnvironmentProject) => {
     const opened = await handleNewThread(scopeProjectRef(project.environmentId, project.id)).catch(
       () => null,
@@ -595,20 +609,17 @@ export function ClickUpPage({ scope = null }: { readonly scope?: string | null }
       toastManager.add({ type: "error", title: "Could not open a thread" });
       return;
     }
-    const store = useComposerDraftStore.getState();
-    const tasks = [...picked.values()];
-    setPicked(new Map());
     const ref = { environmentId: project.environmentId, threadId: opened.threadId };
-    const nextTaskThreads = { ...readTaskThreads() };
-    for (const task of tasks) nextTaskThreads[task.id] = [...(nextTaskThreads[task.id] ?? []), ref];
-    window.localStorage.setItem(TASK_THREADS_STORAGE_KEY, JSON.stringify(nextTaskThreads));
-    setTaskThreads(nextTaskThreads);
-    for (const task of tasks) {
-      store.addReviewComment(opened.draftId, buildClickUpTaskContext(task), {
-        insertAtCaret: false,
-      });
-      void fillClickUpTaskChip(opened.draftId, task, scope);
-    }
+    linkPickedTasks(writePickedTasksToComposer(opened.draftId, scope), ref);
+  };
+
+  const addToThread = (thread: EnvironmentThreadShell) => {
+    const ref = scopeThreadRef(thread.environmentId, thread.id);
+    linkPickedTasks(writePickedTasksToComposer(ref, clickUpScope(ref)), ref);
+    void router.navigate({
+      to: "/$environmentId/$threadId",
+      params: { environmentId: thread.environmentId, threadId: thread.id },
+    });
   };
 
   const needle = query.trim().toLowerCase();
@@ -976,8 +987,32 @@ export function ClickUpPage({ scope = null }: { readonly scope?: string | null }
                 render={
                   <button
                     type="button"
+                    disabled={openThreads.length === 0}
+                    className="ml-auto flex items-center gap-1 rounded-md border border-input px-2.5 py-1 font-medium text-secondary-label hover:bg-accent disabled:opacity-50"
+                  />
+                }
+              >
+                {openThreads.length === 0 ? "No threads yet" : "Add to thread…"}
+                <ChevronDownIcon className="size-3.5" />
+              </MenuTrigger>
+              <MenuPopup align="end" side="bottom">
+                {openThreads.map((thread) => (
+                  <MenuItem
+                    key={`${thread.environmentId}:${thread.id}`}
+                    onClick={() => addToThread(thread)}
+                  >
+                    {thread.title}
+                  </MenuItem>
+                ))}
+              </MenuPopup>
+            </Menu>
+            <Menu>
+              <MenuTrigger
+                render={
+                  <button
+                    type="button"
                     disabled={projects.length === 0}
-                    className="ml-auto flex items-center gap-1 rounded-md bg-primary px-2.5 py-1 font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                    className="flex items-center gap-1 rounded-md bg-primary px-2.5 py-1 font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
                   />
                 }
               >
@@ -1406,7 +1441,13 @@ function ListView({
     const expanded = children.length > 0 && isExpanded(task.id);
     return (
       <Fragment key={task.id}>
-        <div className="group flex h-9 items-center gap-3 border-b border-border pr-2 hover:bg-accent">
+        <div
+          draggable
+          onDragStart={(event) =>
+            event.dataTransfer.setData(CLICKUP_TASK_DRAG_TYPE, encodeClickUpTaskDragPayload(task))
+          }
+          className="group flex h-9 items-center gap-3 border-b border-border pr-2 hover:bg-accent"
+        >
           <PickBox task={task} picked={picked} onToggle={onTogglePicked} />
           {depth > 0 ? (
             <span aria-hidden className="shrink-0" style={{ width: depth * 20 }} />
@@ -1694,6 +1735,11 @@ function BoardCardBody({
         />
         <button
           type="button"
+          draggable
+          onPointerDown={(event) => event.stopPropagation()}
+          onDragStart={(event) =>
+            event.dataTransfer.setData(CLICKUP_TASK_DRAG_TYPE, encodeClickUpTaskDragPayload(task))
+          }
           onClick={() => onOpenTask(task)}
           className="min-w-0 flex-1 text-left text-sm leading-snug hover:text-primary"
         >

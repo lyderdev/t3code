@@ -209,6 +209,7 @@ import {
   fillClickUpTaskChip,
   openClickUpTaskInRightPanel,
 } from "../../clickup/clickupTaskMentions";
+import { decodeClickUpTaskDragPayload } from "../../clickup/clickupTaskDrag";
 import { getComposerPromptInjectionState, getComposerReasoningStep } from "./composerProviderState";
 import { readPromptUltrathink } from "./TraitsPicker";
 import {
@@ -2592,6 +2593,20 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       );
       if (inserted) {
         addComposerDraftReviewComment(composerDraftTarget, comment, { appendReference: false });
+      }
+      return inserted;
+    },
+    insertClickUpTaskAtEnd: (taskJson) => {
+      const task = decodeClickUpTaskDragPayload(taskJson);
+      if (task === null) return true;
+      const comment = buildClickUpTaskContext(task);
+      const inserted = insertComposerTextAtEndStable(
+        `${formatInlineContextReference(reviewCommentContextReference(comment))} `,
+        { ensureLeadingBoundary: true },
+      );
+      if (inserted) {
+        addComposerDraftReviewComment(composerDraftTarget, comment, { appendReference: false });
+        void fillClickUpTaskChip(composerDraftTarget, task, clickUpScope(routeThreadRef));
       }
       return inserted;
     },

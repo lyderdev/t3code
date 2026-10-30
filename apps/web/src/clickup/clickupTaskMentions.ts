@@ -15,6 +15,7 @@ import {
   type ClickUpTask,
   type ClickUpTaskDetail,
 } from "./api";
+import { linkTasksToThread } from "./clickupTaskThreads";
 
 const RESULT_LIMIT = 8;
 
@@ -277,4 +278,18 @@ export async function fillClickUpTaskChip(
   if (store.getComposerDraft(target)?.reviewComments.some((entry) => entry.id === detail.id)) {
     store.addReviewComment(target, detail, { appendReference: false });
   }
+}
+
+/** Puts a ticket in a composer and, when it belongs to a real thread, records the link. */
+export function attachClickUpTask(
+  target: ComposerThreadTarget,
+  task: ClickUpTask,
+  accountScope: string | null,
+  linkRef: ScopedThreadRef | null,
+): void {
+  useComposerDraftStore
+    .getState()
+    .addReviewComment(target, buildClickUpTaskContext(task), { insertAtCaret: false });
+  void fillClickUpTaskChip(target, task, accountScope);
+  if (linkRef !== null) linkTasksToThread([task], linkRef);
 }

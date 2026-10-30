@@ -5,6 +5,7 @@ import {
   type ComposerMentionDropHost,
   makeComposerMentionDragHandlers,
 } from "./composerMentionDrag.ts";
+import { CLICKUP_TASK_DRAG_TYPE } from "../../clickup/clickupTaskDrag.ts";
 
 const makeDragEvent = (options?: {
   mention?: string;
@@ -38,6 +39,10 @@ const makeHost = (insertResult = true) => {
     },
     insertPullRequestAtEnd: (pullRequest) => {
       log.push(`pr:${pullRequest.number}`);
+      return insertResult;
+    },
+    insertClickUpTaskAtEnd: (taskJson) => {
+      log.push(`clickup:${taskJson}`);
       return insertResult;
     },
     setDragActive: (active) => void log.push(`active:${active}`),
@@ -74,5 +79,17 @@ describe("makeComposerMentionDragHandlers", () => {
     const { event } = makeDragEvent();
     handlers.onDragOver(event);
     expect(event.dataTransfer.dropEffect).toBe("move");
+  });
+
+  it("hands a dragged ClickUp ticket to the host", () => {
+    const { host, log } = makeHost();
+    const handlers = makeComposerMentionDragHandlers(host);
+    const { event, calls } = makeDragEvent({
+      format: CLICKUP_TASK_DRAG_TYPE,
+      mention: '{"id":"abc123"}',
+    });
+    handlers.onDrop(event);
+    expect(calls).toContain("preventDefault");
+    expect(log).toEqual(["active:false", 'clickup:{"id":"abc123"}']);
   });
 });
